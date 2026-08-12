@@ -1,0 +1,20 @@
+[Unit]
+Description=Claude Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/home/deploy/bot
+Environment=HOME=/home/deploy
+Environment=PATH=/home/deploy/.nvm/versions/node/v24.13.1/bin:/home/deploy/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/deploy/.nvm/versions/node/v24.13.1/bin/node /home/deploy/bot/src/index.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/deploy/bot/bot.log
+StandardError=append:/home/deploy/bot/bot.log
+
+[Install]
+WantedBy=multi-user.target
