@@ -93,6 +93,11 @@ input[role="switch"]:checked::after { transform: translateX(20px); }
 .danger-fill-button { background: var(--red); color: #fff; }
 .secondary-button { margin-top: 9px; background: var(--surface-2); }
 .small-button { min-height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--blue); color: var(--blue-text); font-size: 14px; font-weight: 650; }
+.danger-setting { width: 100%; min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; color: var(--red); text-align: left; }
+.danger-setting strong, .danger-setting small { display: block; }
+.danger-setting strong { font-size: 16px; }
+.danger-setting small { margin-top: 5px; color: var(--muted); font-size: 13px; }
+.danger-setting:disabled { opacity: .45; cursor: default; }
 .path-card { width: 100%; margin-bottom: 12px; padding: 16px; border: 1px solid var(--line); color: var(--muted); overflow: hidden; text-overflow: ellipsis; text-align: left; }
 .file-icon { font-size: 23px; color: var(--muted); }
 .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }

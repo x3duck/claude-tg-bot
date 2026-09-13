@@ -1077,6 +1077,21 @@ async function getWebStatus(force: boolean): Promise<WebStatus> {
   return webStatusCache
 }
 
+function removeTopicState(scopeId: ScopeId): void {
+  const rt = runtimeFor(scopeId)
+  rt.queue.length = 0
+  rt.abort?.abort()
+  archiveWorkspace(scopeId)
+  deleteChat(scopeId)
+  runtimes.delete(scopeId)
+}
+
+function topicIsMissing(error: unknown): boolean {
+  const message = String(error).toLowerCase()
+  return message.includes('message thread not found') || message.includes('topic not found')
+    || message.includes('topic was deleted') || message.includes('topic_deleted')
+}
+
 const webServer = startWebServer({
   port: WEB_PORT,
   botToken: BOT_TOKEN,
@@ -1131,6 +1146,27 @@ const webServer = startWebServer({
     save()
     return { ok: true, scopeId }
   },
+  deleteAllTopics: async (userId) => {
+    const scopes = listChats().map(([scopeId]) => scopeId).filter((scopeId) => scopeId.startsWith(`${userId}:`))
+    let removed = 0
+    let failed = 0
+    for (const scopeId of scopes) {
+      const threadId = Number(scopeId.split(':')[1] ?? 0)
+      if (threadId) {
+        try {
+          await bot.api.deleteForumTopic(userId, threadId)
+        } catch (error) {
+          if (!topicIsMissing(error)) {
+            failed += 1
+            continue
+          }
+        }
+      }
+      removeTopicState(scopeId)
+      removed += 1
+    }
+    return { ok: failed === 0, removed, failed }
+  },
   patchTopic: async (userId, requestedScope, patch) => {
     const scopeId = ownedScope(userId, requestedScope)
     const state = getChat(scopeId)
@@ -1166,13 +1202,12 @@ const webServer = startWebServer({
     const scopeId = ownedScope(userId, requestedScope)
     const threadId = Number(scopeId.split(':')[1] ?? 0)
     if (!threadId) throw new Error('Основной чат нельзя удалить')
-    const rt = runtimeFor(scopeId)
-    rt.queue.length = 0
-    rt.abort?.abort()
-    archiveWorkspace(scopeId)
-    deleteChat(scopeId)
-    runtimes.delete(scopeId)
-    await bot.api.deleteForumTopic(userId, threadId)
+    try {
+      await bot.api.deleteForumTopic(userId, threadId)
+    } catch (error) {
+      if (!topicIsMissing(error)) throw error
+    }
+    removeTopicState(scopeId)
     return { ok: true }
   },
   stopTopic: async (userId, requestedScope) => {

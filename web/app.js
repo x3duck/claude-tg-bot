@@ -82,6 +82,8 @@ function renderThreads() {
   const query = $('#thread-search').value.trim().toLocaleLowerCase('ru')
   const topics = state.data.topics.filter((topic) => topic.name.toLocaleLowerCase('ru').includes(query))
   $('#thread-count').textContent = query ? `${topics.length} из ${state.data.topics.length}` : state.data.topics.length
+  $('#delete-all-topics').disabled = state.data.topics.length === 0
+  $('#delete-all-count').textContent = state.data.topics.length ? `${state.data.topics.length} ›` : '0'
   $('#threads-list').innerHTML = topics.map((topic) => `
     <button class="thread-row" data-topic="${escapeHtml(topic.id)}">
       <span class="status-dot ${topic.busy ? 'active' : ''}"></span>
@@ -214,6 +216,25 @@ async function deleteTopic() {
   } catch (error) { showToast(error.message) }
 }
 
+async function deleteAllTopics() {
+  const button = $('#confirm-delete-all')
+  button.disabled = true
+  button.textContent = 'Удаляю…'
+  try {
+    const result = await api('/api/topics', { method: 'DELETE' })
+    $('#delete-all-dialog').close()
+    state.snapshot = ''
+    await load({ silent: true })
+    navigate('threads')
+    showToast(result.failed ? `Удалено: ${result.removed}, ошибок: ${result.failed}` : `Удалено тредов: ${result.removed}`)
+  } catch (error) {
+    showToast(error.message)
+  } finally {
+    button.disabled = false
+    button.textContent = 'Удалить всё'
+  }
+}
+
 async function stopRun() {
   try {
     await api(`/api/topics/${encodeURIComponent(state.selected.id)}/stop`, { method: 'POST', body: '{}' })
@@ -305,6 +326,12 @@ $('#create-topic').addEventListener('click', () => openTopicDialog('create'))
 $('#rename-topic').addEventListener('click', () => openTopicDialog('rename'))
 $('#delete-topic').addEventListener('click', () => $('#delete-dialog').showModal())
 $('#confirm-delete').addEventListener('click', deleteTopic)
+$('#delete-all-topics').addEventListener('click', () => {
+  const count = state.data.topics.length
+  $('#delete-all-copy').textContent = `Будет удалено тредов: ${count}. Все задачи остановятся, а рабочие файлы переедут в архив.`
+  $('#delete-all-dialog').showModal()
+})
+$('#confirm-delete-all').addEventListener('click', deleteAllTopics)
 $('#topic-form').addEventListener('submit', createOrRenameTopic)
 $('#cwd-row').addEventListener('click', () => {
   $('#cwd-input').value = state.selected.cwd

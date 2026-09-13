@@ -10,6 +10,7 @@ type WebBridge = {
   allowedUsers: Set<number>
   getOverview: (userId: number, refreshStatus: boolean) => Promise<unknown>
   createTopic: (userId: number, name: string) => Promise<unknown>
+  deleteAllTopics: (userId: number) => Promise<unknown>
   patchTopic: (userId: number, scopeId: string, patch: Record<string, unknown>) => Promise<unknown>
   deleteTopic: (userId: number, scopeId: string) => Promise<unknown>
   stopTopic: (userId: number, scopeId: string) => Promise<unknown>
@@ -120,6 +121,10 @@ export function startWebServer(bridge: WebBridge): http.Server {
       if (req.method === 'POST' && url.pathname === '/api/topics') {
         const body = await readJson(req)
         sendJson(res, 200, await bridge.createTopic(userId, typeof body.name === 'string' ? body.name : ''))
+        return
+      }
+      if (req.method === 'DELETE' && url.pathname === '/api/topics') {
+        sendJson(res, 200, await bridge.deleteAllTopics(userId))
         return
       }
       const fileMatch = url.pathname.match(/^\/api\/topics\/([^/]+)\/files\/([^/]+)$/)

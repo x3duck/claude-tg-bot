@@ -67,6 +67,11 @@
           <div class="setting-row"><span class="setting-icon">◷</span><span>Последнее обновление</span><strong id="last-update">—</strong></div>
         </section>
         <p class="section-note">Лимиты и авторизация проверяются отдельно, чтобы не запускать Claude CLI каждые несколько секунд.</p>
+        <div class="section-heading list-heading"><h2>Опасная зона</h2></div>
+        <button id="delete-all-topics" class="danger-setting card">
+          <span><strong>Удалить все треды</strong><small>Остановить задачи и сбросить состояние</small></span>
+          <span id="delete-all-count" class="chevron"></span>
+        </button>
       </section>
     </main>
 
@@ -97,6 +102,13 @@
       <p class="dialog-copy">Сообщения исчезнут из Telegram, а рабочие файлы будут перенесены в архив.</p>
       <button id="confirm-delete" class="danger-fill-button">Удалить</button>
       <button data-close="delete-dialog" class="secondary-button">Отмена</button>
+    </dialog>
+    <dialog id="delete-all-dialog" class="sheet">
+      <div class="sheet-handle"></div>
+      <h2>Удалить все треды?</h2>
+      <p id="delete-all-copy" class="dialog-copy">Все задачи будут остановлены. Темы исчезнут из Telegram, а рабочие файлы будут перенесены в архив.</p>
+      <button id="confirm-delete-all" class="danger-fill-button">Удалить всё</button>
+      <button data-close="delete-all-dialog" class="secondary-button">Отмена</button>
     </dialog>
 
     <nav class="bottom-nav" aria-label="Основная навигация">
