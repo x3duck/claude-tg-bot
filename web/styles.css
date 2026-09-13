@@ -94,6 +94,17 @@ input[role="switch"]:checked::after { transform: translateX(18px); }
 .breadcrumbs button { flex: none; border: 0; background: transparent; padding: 7px 3px; color: var(--blue); }
 .breadcrumbs button + button::before { content: "›"; margin-right: 8px; color: var(--muted); }
 .files-list { min-height: 80px; }
+.files-list.loading:empty::after { display: none; }
+.file-skeleton { min-height: 66px; display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.file-skeleton:last-child { border-bottom: 0; }
+.file-skeleton > span, .file-skeleton i { display: block; overflow: hidden; position: relative; border-radius: 7px; background: color-mix(in srgb, var(--muted) 13%, transparent); }
+.file-skeleton > span { width: 32px; height: 32px; border-radius: 10px; }
+.file-skeleton > div { display: flex; flex-direction: column; gap: 8px; }
+.file-skeleton i { width: min(62%, 240px); height: 12px; }
+.file-skeleton i:last-child { width: min(38%, 150px); height: 9px; }
+.file-skeleton > span::after, .file-skeleton i::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 9%, transparent), transparent); animation: skeleton-shimmer 1.25s ease-in-out infinite; }
+@keyframes skeleton-shimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .file-skeleton > span::after, .file-skeleton i::after { animation: none; } }
 .file-row.loading { pointer-events: none; opacity: .6; }
 .file-kind { color: var(--muted); font-size: 12px; text-transform: uppercase; }
 .notice { margin: 12px 0; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--yellow) 32%, transparent); border-radius: 13px; background: color-mix(in srgb, var(--yellow) 9%, transparent); color: #f5cc7d; font-size: 13px; line-height: 1.4; }

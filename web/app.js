@@ -63,7 +63,7 @@ const state = {
   stale: false,
   submitting: new Set(),
   newSessionPending: null,
-  files: { topicId: null, root: 'workspace', path: '', entries: [], nextOffset: null, pagesLoaded: 0, loading: false, request: 0, error: null, uploadNotice: null, returnView: null },
+  files: { topicId: null, root: 'workspace', path: '', entries: [], nextOffset: null, pagesLoaded: 0, loading: false, loadingVisible: false, request: 0, error: null, uploadNotice: null, returnView: null },
   preview: { file: null, topicId: null, url: null, pdfViewer: null, request: 0 },
 }
 
@@ -333,14 +333,16 @@ function renderFiles() {
     message.className = 'notice error'
     message.innerHTML = `${escapeHtml(state.files.error)} <button id="retry-files">Повторить</button>`
     $('#retry-files').addEventListener('click', () => loadFiles())
-  } else if (state.files.loading && !state.files.entries.length) {
-    message.className = 'notice'
-    message.textContent = 'Загружаем файлы…'
   } else if (state.files.uploadNotice) {
     message.className = 'notice'
     message.textContent = `Файл загружен в inbox: ${state.files.uploadNotice}`
   } else message.classList.add('hidden')
-  $('#files-list').innerHTML = state.files.entries.map((entry) => `<button class="file-row" data-file="${escapeHtml(entry.id)}"><span class="file-icon ${entry.kind === 'directory' ? 'directory-icon' : ''}">${entry.kind === 'directory' ? icon('folder') : fileIcon(entry)}</span><span class="row-copy"><strong>${escapeHtml(entry.name)}</strong><small>${entry.kind === 'directory' ? 'Папка' : `${formatBytes(entry.size)} · ${formatDate(entry.mtime)}`}</small></span><span class="chevron">${icon('chevron-right')}</span></button>`).join('')
+  const list = $('#files-list')
+  list.classList.toggle('loading', state.files.loading && !state.files.entries.length)
+  list.setAttribute('aria-busy', String(state.files.loading))
+  list.innerHTML = state.files.loadingVisible && !state.files.entries.length
+    ? Array.from({ length: 3 }, () => '<div class="file-skeleton" aria-hidden="true"><span></span><div><i></i><i></i></div></div>').join('')
+    : state.files.entries.map((entry) => `<button class="file-row" data-file="${escapeHtml(entry.id)}"><span class="file-icon ${entry.kind === 'directory' ? 'directory-icon' : ''}">${entry.kind === 'directory' ? icon('folder') : fileIcon(entry)}</span><span class="row-copy"><strong>${escapeHtml(entry.name)}</strong><small>${entry.kind === 'directory' ? 'Папка' : `${formatBytes(entry.size)} · ${formatDate(entry.mtime)}`}</small></span><span class="chevron">${icon('chevron-right')}</span></button>`).join('')
   $('#load-more-files').classList.toggle('hidden', state.files.nextOffset === null)
   $('#load-more-files').disabled = state.files.loading
   $('#refresh-files').classList.toggle('hidden', state.files.pagesLoaded <= 1)
@@ -434,9 +436,17 @@ async function loadFiles({ append = false, silent = false } = {}) {
   const offset = append ? state.files.nextOffset : 0
   if (append && offset === null) return
   state.files.loading = true
+  state.files.loadingVisible = false
   state.files.error = null
   if (!append && !silent) state.files.entries = []
   if (!silent) renderFiles()
+  let loadingShownAt = 0
+  const loadingTimer = !append && !silent ? setTimeout(() => {
+    if (request !== state.files.request || !state.files.loading) return
+    loadingShownAt = performance.now()
+    state.files.loadingVisible = true
+    renderFiles()
+  }, 180) : null
   try {
     let result
     if (demoMode) {
@@ -455,8 +465,16 @@ async function loadFiles({ append = false, silent = false } = {}) {
     if (request !== state.files.request) return
     state.files.error = error.message || 'Не удалось загрузить файлы'
   } finally {
-    if (request === state.files.request) state.files.loading = false
-    renderFiles()
+    if (loadingTimer) clearTimeout(loadingTimer)
+    if (loadingShownAt) {
+      const remaining = 240 - (performance.now() - loadingShownAt)
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining))
+    }
+    if (request === state.files.request) {
+      state.files.loading = false
+      state.files.loadingVisible = false
+      renderFiles()
+    }
   }
 }
 
