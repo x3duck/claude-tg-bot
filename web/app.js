@@ -70,6 +70,11 @@ const state = {
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="/icons.svg#${name}" /></svg>`
+function updateHtml(element, markup) {
+  if (element.innerHTML === markup) return false
+  element.innerHTML = markup
+  return true
+}
 const topicById = (id) => state.data?.topics.find((topic) => topic.id === id) || null
 const selectedTopic = () => topicById(state.selectedId)
 
@@ -207,12 +212,17 @@ function renderThreads() {
   const pinned = filtered.filter((topic) => topic.pinned)
   const recent = filtered.filter((topic) => !topic.pinned)
   $('#pinned-section').classList.toggle('hidden', pinned.length === 0)
-  $('#pinned-list').innerHTML = pinned.map(threadMarkup).join('')
-  $('#threads-list').innerHTML = recent.map(threadMarkup).join('')
+  const pinnedList = $('#pinned-list')
+  const threadsList = $('#threads-list')
+  if (updateHtml(pinnedList, pinned.map(threadMarkup).join(''))) {
+    pinnedList.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => openTopic(button.dataset.topic)))
+  }
+  if (updateHtml(threadsList, recent.map(threadMarkup).join(''))) {
+    threadsList.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => openTopic(button.dataset.topic)))
+  }
   $('#thread-count').textContent = query ? `${filtered.length} из ${all.length}` : String(all.length)
   $('#delete-all-count').textContent = all.length ? `${all.length} ›` : '0'
   $('#delete-all-topics').disabled = all.length === 0
-  $$('[data-topic]').forEach((button) => button.addEventListener('click', () => openTopic(button.dataset.topic)))
 }
 
 function threadMarkup(topic) {
@@ -249,8 +259,11 @@ function renderDetail() {
   runCard.classList.toggle('hidden', !topic.busy && !topic.run)
   runCard.innerHTML = topic.busy || topic.run ? `<div class="run-head"><span class="status-dot active"></span><div><strong>${topic.run?.stopping ? 'Останавливаем…' : 'Claude работает'}</strong><small>${escapeHtml(topic.run?.action || 'Выполняет текущую задачу')}</small></div></div><div class="run-meta"><span>${formatElapsed(topic.run?.startedAt)}</span><span>В очереди: ${Number(topic.queued) || 0}</span><button id="stop-run" class="stop-button" ${topic.run?.stopping || isBusy('stop') ? 'disabled' : ''}>${topic.run?.stopping ? 'Остановка…' : 'Остановить'}</button></div>` : ''
   $('#stop-run')?.addEventListener('click', stopRun)
-  $('#sessions-list').innerHTML = topic.sessions.map((session, index) => `<button class="session-row" data-session="${escapeHtml(session.id)}" ${topic.busy || isBusy('session') ? 'disabled' : ''}><span class="session-icon">${icon('terminal')}<span class="status-dot ${session.id === topic.sessionId ? 'current' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(session.title || `Сессия ${index + 1}`)}</strong><small>${escapeHtml(formatDate(session.startedAt))}</small></span>${session.id === topic.sessionId ? '<span class="current-badge">Текущая</span>' : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`).join('')
-  $$('[data-session]').forEach((button) => button.addEventListener('click', () => selectSession(button.dataset.session)))
+  const sessionsList = $('#sessions-list')
+  const sessionsMarkup = topic.sessions.map((session, index) => `<button class="session-row" data-session="${escapeHtml(session.id)}" ${topic.busy || isBusy('session') ? 'disabled' : ''}><span class="session-icon">${icon('terminal')}<span class="status-dot ${session.id === topic.sessionId ? 'current' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(session.title || `Сессия ${index + 1}`)}</strong><small>${escapeHtml(formatDate(session.startedAt))}</small></span>${session.id === topic.sessionId ? '<span class="current-badge">Текущая</span>' : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`).join('')
+  if (updateHtml(sessionsList, sessionsMarkup)) {
+    sessionsList.querySelectorAll('[data-session]').forEach((button) => button.addEventListener('click', () => selectSession(button.dataset.session)))
+  }
 }
 
 function renderSettings() {
