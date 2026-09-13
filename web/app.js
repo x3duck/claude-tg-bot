@@ -5,6 +5,7 @@ tg?.ready()
 tg?.expand()
 
 const demoMode = new URLSearchParams(location.search).get('demo') === '1'
+const STATUS_FORCE_MIN_INTERVAL_MS = 60_000
 const demoData = {
   authenticated: true,
   statusUpdatedAt: new Date(Date.now() - 42_000).toISOString(),
@@ -59,6 +60,7 @@ const state = {
   overviewAbort: null,
   overviewRequest: 0,
   overviewError: null,
+  lastStatusForceAt: 0,
   lastSuccessAt: null,
   stale: false,
   submitting: new Set(),
@@ -797,7 +799,14 @@ $('#upload-button').addEventListener('click', () => $('#upload-input').click())
 $('#upload-input').addEventListener('change', (event) => uploadFile(event.target.files?.[0]))
 $('#close-preview').addEventListener('click', closePreview)
 $('#download-preview').addEventListener('click', () => downloadFile())
-$('#refresh-auth').addEventListener('click', () => loadOverview({ refreshStatus: true, force: true }))
+$('#refresh-auth').addEventListener('click', () => {
+  if (Date.now() - state.lastStatusForceAt < STATUS_FORCE_MIN_INTERVAL_MS) {
+    showToast('Лимиты можно обновлять раз в минуту')
+    return
+  }
+  state.lastStatusForceAt = Date.now()
+  void loadOverview({ refreshStatus: true, force: true })
+})
 $('#commands-toggle').addEventListener('click', () => $('#commands-list').classList.toggle('hidden'))
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadOverview({ silent: true }); if (state.view === 'files' && state.files.pagesLoaded <= 1) loadFiles() } })
 window.addEventListener('beforeunload', revokePreviewUrl)

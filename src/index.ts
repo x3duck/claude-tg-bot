@@ -1083,9 +1083,15 @@ type WebStatus = {
 
 let webStatusCache: WebStatus | null = null
 let webStatusPending: Promise<WebStatus> | null = null
+const WEB_STATUS_CACHE_MS = 5 * 60_000
+const WEB_STATUS_FORCE_MIN_INTERVAL_MS = 60_000
+let webStatusForcedAt = 0
 
 async function getWebStatus(force: boolean): Promise<WebStatus> {
-  if (!force && webStatusCache && Date.now() - webStatusCache.updatedAt < 60_000) return webStatusCache
+  const now = Date.now()
+  if (!force && webStatusCache && now - webStatusCache.updatedAt < WEB_STATUS_CACHE_MS) return webStatusCache
+  if (force && now - webStatusForcedAt < WEB_STATUS_FORCE_MIN_INTERVAL_MS && webStatusCache) return webStatusCache
+  if (force) webStatusForcedAt = now
   if (webStatusPending) return !force && webStatusCache ? webStatusCache : webStatusPending
   webStatusPending = Promise.all([
     authStatus(),
