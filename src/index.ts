@@ -373,10 +373,10 @@ bot.command('login', async (ctx) => {
   await ctx.reply('Запускаю вход Claude…')
   activeLogin = startLogin({
     onUrl: (url) => {
-      void ctx.reply('Открой Claude и подтверди вход. Если сайт покажет код, пришли его командой /auth_code &lt;код&gt;.', {
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: [[{ text: 'Войти в Claude', url }]] },
-      })
+      void ctx.reply(
+        `Скопируй ссылку и открой её в браузере:\n\n${url}\n\nЕсли сайт покажет код, пришли его командой /auth_code КОД`,
+        { link_preview_options: { is_disabled: true } },
+      )
     },
     onDone: (ok, message) => {
       activeLogin = null
