@@ -123,64 +123,111 @@ const draftScopes = new Map<number, ScopeId>()
 
 class Progress {
   private lines: string[] = []
-  private partial = ''
   private rendered = ''
   private timer: NodeJS.Timeout | null = null
   private closed = false
-  private lastSentAt = 0
-  private dirty = false
-  private flushTask: Promise<void> | null = null
 
   private readonly ctx: Context
-  private readonly draftId: number
+  private readonly messageId: number
   private readonly verbose: boolean
 
-  constructor(ctx: Context, verbose: boolean) {
+  constructor(ctx: Context, messageId: number, verbose: boolean) {
     this.ctx = ctx
-    this.draftId = nextDraftId++
-    draftScopes.set(this.draftId, scopeFor(ctx))
+    this.messageId = messageId
     this.verbose = verbose
-    this.timer = setInterval(() => this.requestFlush(), Math.min(PROGRESS_INTERVAL_MS, 1000))
-    this.requestFlush()
+    this.timer = setInterval(() => void this.flush(), PROGRESS_INTERVAL_MS)
   }
 
   add(line: string): void {
     this.lines.push(line)
-  }
-
-  setPartial(text: string): void {
-    this.partial = text
-  }
-
-  clearPartial(): void {
-    this.partial = ''
-  }
-
-  async setFinal(text: string): Promise<void> {
-    if (!text) return
-    this.partial = text
-    this.lines = []
-    this.requestFlush()
-    await this.flushTask
+    void this.flush()
   }
 
   private compose(): string {
-    const progress = this.lines.at(-1)
-    if (this.partial) {
-      const suffix = this.verbose && progress ? `\n\n⏳ ${progress}` : ''
-      const room = 4000 - suffix.length
-      const text = this.partial.length > room ? `${this.partial.slice(0, room - 1)}…` : this.partial
-      return text + suffix
-    }
-    if (!this.verbose || this.lines.length === 0) return ''
+    if (!this.verbose || this.lines.length === 0) return '⏳ Думаю…'
     const tail = this.lines.slice(-PROGRESS_TAIL)
     const hidden = this.lines.length - tail.length
     const head = hidden > 0 ? `⏳ Работаю… (+${hidden} шагов выше)\n` : '⏳ Работаю…\n'
     return head + tail.map((l) => `· ${l}`).join('\n')
   }
 
-  private requestFlush(): void {
+  private async flush(): Promise<void> {
     if (this.closed) return
+    const text = this.compose().slice(0, 4000)
+    if (text === this.rendered) return
+    this.rendered = text
+    try {
+      await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, text)
+    } catch {
+    }
+  }
+
+  async finish(summary: string | null): Promise<void> {
+    this.closed = true
+    if (this.timer) clearInterval(this.timer)
+    try {
+      if (summary) await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, summary)
+      else await this.ctx.api.deleteMessage(this.ctx.chat!.id, this.messageId)
+    } catch {
+    }
+  }
+}
+
+class DraftStream {
+  private draftId = 0
+  private partial = ''
+  private rendered = ''
+  private started = false
+  private waitingAfterTool = false
+  private closed = false
+  private lastSentAt = 0
+  private dirty = false
+  private flushTask: Promise<void> | null = null
+  private timer: NodeJS.Timeout | null = null
+
+  private readonly ctx: Context
+  private readonly scopeId: ScopeId
+
+  constructor(ctx: Context, scopeId: ScopeId) {
+    this.ctx = ctx
+    this.scopeId = scopeId
+    this.allocateDraft()
+    this.timer = setInterval(() => this.requestFlush(), 20_000)
+  }
+
+  resetForTool(): void {
+    if (this.waitingAfterTool) return
+    this.waitingAfterTool = true
+    this.started = true
+    this.partial = ''
+    this.rendered = ''
+    this.allocateDraft()
+    this.requestFlush()
+  }
+
+  setPartial(text: string): void {
+    this.waitingAfterTool = false
+    this.started = true
+    this.partial = text
+    this.requestFlush()
+  }
+
+  async setFinal(text: string): Promise<void> {
+    if (!text) return
+    this.started = true
+    this.partial = text
+    this.requestFlush()
+    await this.flushTask
+  }
+
+  private allocateDraft(): void {
+    if (this.draftId) draftScopes.delete(this.draftId)
+    this.draftId = nextDraftId++
+    draftScopes.set(this.draftId, this.scopeId)
+  }
+
+  private requestFlush(): void {
+    if (this.closed || !this.started) return
     this.dirty = true
     if (!this.flushTask) this.flushTask = this.flush().finally(() => (this.flushTask = null))
   }
@@ -188,7 +235,7 @@ class Progress {
   private async flush(): Promise<void> {
     while (this.dirty && !this.closed) {
       this.dirty = false
-      const text = this.compose().slice(0, 3800)
+      const text = this.partial.length > 3800 ? `${this.partial.slice(0, 3799)}…` : this.partial
       if (text === this.rendered && Date.now() - this.lastSentAt < 20_000) continue
       this.rendered = text
       this.lastSentAt = Date.now()
@@ -242,7 +289,9 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
   const cwd = cwdFor(scopeId)
   const rt = runtimeFor(scopeId)
 
-  const progress = new Progress(ctx, state.verbose)
+  const status = await ctx.reply('⏳ Думаю…')
+  const progress = new Progress(ctx, status.message_id, state.verbose)
+  const draft = new DraftStream(ctx, scopeId)
 
   const abort = new AbortController()
   rt.abort = abort
@@ -274,12 +323,12 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
             save()
           }
         } else if (e.type === 'tool') {
-          progress.clearPartial()
+          draft.resetForTool()
           progress.add(e.label)
         } else if (e.type === 'note') {
           progress.add(e.text)
         } else if (e.type === 'partial') {
-          progress.setPartial(e.text)
+          draft.setPartial(e.text)
         }
       },
     })
@@ -295,8 +344,9 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     const summary = state.verbose
       ? `✅ ${secs} с · ${result.toolCalls} инстр. · ${fmtTokens(result.inputTokens)}→${fmtTokens(result.outputTokens)} токенов`
       : null
-    await progress.setFinal(result.text)
-    await progress.finish()
+    await draft.setFinal(result.text)
+    await draft.finish()
+    await progress.finish(summary)
     if (abort.signal.aborted) await ctx.reply('⏹ Остановлено')
 
     if (result.text) await sendAnswer(ctx, result.text)
@@ -306,7 +356,8 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     await sendArtifacts(ctx, ws, cwd, since, result.text)
   } catch (err) {
     const aborted = abort.signal.aborted || (err instanceof Error && err.name === 'AbortError')
-    await progress.finish()
+    await draft.finish()
+    await progress.finish(aborted ? '⏹ Остановлено' : '❌ Ошибка')
     if (aborted) await ctx.reply('⏹ Остановлено')
     if (!aborted) {
       console.error('[run] ошибка выполнения:', err)
