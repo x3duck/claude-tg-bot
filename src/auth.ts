@@ -1,4 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -24,9 +27,19 @@ export function startLogin(handlers: {
   onUrl: (url: string) => void
   onDone: (ok: boolean, message: string) => void
 }): LoginProcess {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-auth-'))
+  for (const name of ['open', 'xdg-open', 'sensible-browser']) {
+    const file = path.join(binDir, name)
+    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+  }
   const child = spawn('claude', ['auth', 'login', '--claudeai'], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NO_COLOR: '1' },
+    env: {
+      ...process.env,
+      BROWSER: '/usr/bin/true',
+      NO_COLOR: '1',
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+    },
   })
 
   let output = ''
@@ -51,6 +64,7 @@ export function startLogin(handlers: {
     handlers.onDone(false, err.message)
   })
   child.once('close', (code) => {
+    fs.rmSync(binDir, { recursive: true, force: true })
     if (settled) return
     settled = true
     const ok = code === 0 && /login successful/i.test(output)
