@@ -1,5 +1,6 @@
 import path from 'node:path'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import { Bot, InputFile } from 'grammy'
 import type { Context } from 'grammy'
 import {
@@ -1038,15 +1039,38 @@ function ownedScope(userId: number, scopeId: string): ScopeId {
   return scopeId
 }
 
+function webFileId(file: string): string {
+  return createHash('sha256').update(file).digest('base64url').slice(0, 24)
+}
+
+type WebStatus = {
+  authenticated: boolean
+  limits: { title: string; percent: number; resetsAt: string | null }[]
+  updatedAt: number
+}
+
+let webStatusCache: WebStatus | null = null
+
+async function getWebStatus(force: boolean): Promise<WebStatus> {
+  if (!force && webStatusCache) return webStatusCache
+  const [authenticated, usage] = await Promise.all([
+    authStatus(),
+    fetchPlanUsage().catch(() => null),
+  ])
+  webStatusCache = {
+    authenticated,
+    limits: usage?.rows.map((row) => ({ title: row.title, percent: row.percent, resetsAt: row.resetsAt })) ?? [],
+    updatedAt: Date.now(),
+  }
+  return webStatusCache
+}
+
 const webServer = startWebServer({
   port: WEB_PORT,
   botToken: BOT_TOKEN,
   allowedUsers: ALLOWED_USER_IDS,
-  getOverview: async (userId) => {
-    const [authenticated, usage] = await Promise.all([
-      authStatus(),
-      fetchPlanUsage().catch(() => null),
-    ])
+  getOverview: async (userId, refreshStatus) => {
+    const status = await getWebStatus(refreshStatus)
     const topics = listChats()
       .filter(([scopeId]) => scopeId.startsWith(`${userId}:`))
       .map(([scopeId, state]) => {
@@ -1056,6 +1080,7 @@ const webServer = startWebServer({
         const cwd = cwdFor(scopeId)
         const ws = workspaceFor(scopeId)
         const files = listFiles(ws, cwd).slice(0, 30).map((file) => ({
+          id: webFileId(file.path),
           name: path.basename(file.path),
           kind: 'file',
           meta: `${fmtSize(file.size)} · ${new Date(file.mtime).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}`,
@@ -1077,14 +1102,45 @@ const webServer = startWebServer({
       })
       .sort((a, b) => Number(b.busy) - Number(a.busy) || a.name.localeCompare(b.name, 'ru'))
     return {
-      authenticated,
-      limits: usage?.rows.map((row) => ({ title: row.title, percent: row.percent, resetsAt: row.resetsAt })) ?? [],
+      authenticated: status.authenticated,
+      limits: status.limits,
+      statusUpdatedAt: status.updatedAt,
       topics,
     }
+  },
+  createTopic: async (userId, requestedName) => {
+    const name = requestedName.replace(/\s+/g, ' ').trim().slice(0, 128)
+    if (!name) throw new Error('Укажи название треда')
+    const topic = await bot.api.createForumTopic(userId, name)
+    const scopeId = `${userId}:${topic.message_thread_id}`
+    const state = getChat(scopeId)
+    state.topicName = name
+    state.topicNameImplicit = false
+    save()
+    return { ok: true, scopeId }
   },
   patchTopic: async (userId, requestedScope, patch) => {
     const scopeId = ownedScope(userId, requestedScope)
     const state = getChat(scopeId)
+    const threadId = Number(scopeId.split(':')[1] ?? 0)
+    if (typeof patch.name === 'string') {
+      const name = patch.name.replace(/\s+/g, ' ').trim().slice(0, 128)
+      if (!threadId) throw new Error('Основной чат нельзя переименовать')
+      if (!name) throw new Error('Название не может быть пустым')
+      await bot.api.editForumTopic(userId, threadId, { name })
+      state.topicName = name
+      state.topicNameImplicit = false
+    }
+    if (typeof patch.cwd === 'string') {
+      const input = patch.cwd.trim()
+      if (!input || input === '~') {
+        state.cwd = null
+      } else {
+        const target = path.resolve(cwdFor(scopeId), input.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
+        if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error('Нет такой директории')
+        state.cwd = target
+      }
+    }
     if (typeof patch.verbose === 'boolean') state.verbose = patch.verbose
     if (typeof patch.model === 'string' && MODELS.some((model) => model.id === patch.model)) state.model = patch.model
     if (typeof patch.sessionId === 'string' && state.sessions.some((session) => session.id === patch.sessionId)) {
@@ -1092,6 +1148,19 @@ const webServer = startWebServer({
       resetSessionUsage(scopeId)
     }
     save()
+    return { ok: true }
+  },
+  deleteTopic: async (userId, requestedScope) => {
+    const scopeId = ownedScope(userId, requestedScope)
+    const threadId = Number(scopeId.split(':')[1] ?? 0)
+    if (!threadId) throw new Error('Основной чат нельзя удалить')
+    const rt = runtimeFor(scopeId)
+    rt.queue.length = 0
+    rt.abort?.abort()
+    archiveWorkspace(scopeId)
+    deleteChat(scopeId)
+    runtimes.delete(scopeId)
+    await bot.api.deleteForumTopic(userId, threadId)
     return { ok: true }
   },
   stopTopic: async (userId, requestedScope) => {
@@ -1106,6 +1175,13 @@ const webServer = startWebServer({
     resetSessionUsage(scopeId)
     save()
     return { ok: true }
+  },
+  getFile: async (userId, requestedScope, requestedFile) => {
+    const scopeId = ownedScope(userId, requestedScope)
+    const files = listFiles(workspaceFor(scopeId), cwdFor(scopeId))
+    const file = files.find((candidate) => webFileId(candidate.path) === requestedFile)
+    if (!file || !fs.existsSync(file.path) || !fs.statSync(file.path).isFile()) throw new Error('Файл не найден')
+    return { path: file.path, name: path.basename(file.path) }
   },
 })
 

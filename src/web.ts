@@ -8,10 +8,13 @@ type WebBridge = {
   port: number
   botToken: string
   allowedUsers: Set<number>
-  getOverview: (userId: number) => Promise<unknown>
+  getOverview: (userId: number, refreshStatus: boolean) => Promise<unknown>
+  createTopic: (userId: number, name: string) => Promise<unknown>
   patchTopic: (userId: number, scopeId: string, patch: Record<string, unknown>) => Promise<unknown>
+  deleteTopic: (userId: number, scopeId: string) => Promise<unknown>
   stopTopic: (userId: number, scopeId: string) => Promise<unknown>
   newSession: (userId: number, scopeId: string) => Promise<unknown>
+  getFile: (userId: number, scopeId: string, fileId: string) => Promise<{ path: string; name: string }>
 }
 
 const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'web')
@@ -84,7 +87,7 @@ function serveStatic(url: URL, res: http.ServerResponse): void {
   }
   res.writeHead(200, {
     'content-type': MIME[path.extname(file)] ?? 'application/octet-stream',
-    'cache-control': path.extname(file) === '.html' ? 'no-cache' : 'public, max-age=3600',
+    'cache-control': 'no-cache',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
   })
@@ -111,7 +114,26 @@ export function startWebServer(bridge: WebBridge): http.Server {
 
     try {
       if (req.method === 'GET' && url.pathname === '/api/overview') {
-        sendJson(res, 200, await bridge.getOverview(userId))
+        sendJson(res, 200, await bridge.getOverview(userId, url.searchParams.get('refresh') === 'status'))
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/api/topics') {
+        const body = await readJson(req)
+        sendJson(res, 200, await bridge.createTopic(userId, typeof body.name === 'string' ? body.name : ''))
+        return
+      }
+      const fileMatch = url.pathname.match(/^\/api\/topics\/([^/]+)\/files\/([^/]+)$/)
+      if (req.method === 'GET' && fileMatch) {
+        const file = await bridge.getFile(userId, decodeURIComponent(fileMatch[1]!), decodeURIComponent(fileMatch[2]!))
+        const stat = fs.statSync(file.path)
+        res.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': stat.size,
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        })
+        fs.createReadStream(file.path).pipe(res)
         return
       }
       const match = url.pathname.match(/^\/api\/topics\/([^/]+)(?:\/(stop|new-session))?$/)
@@ -120,6 +142,10 @@ export function startWebServer(bridge: WebBridge): http.Server {
         const action = match[2]
         if (req.method === 'PATCH' && !action) {
           sendJson(res, 200, await bridge.patchTopic(userId, scopeId, await readJson(req)))
+          return
+        }
+        if (req.method === 'DELETE' && !action) {
+          sendJson(res, 200, await bridge.deleteTopic(userId, scopeId))
           return
         }
         if (req.method === 'POST' && action === 'stop') {
