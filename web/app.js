@@ -277,9 +277,12 @@ function renderThreads() {
   const query = $('#thread-search').value.trim().toLocaleLowerCase('ru')
   const all = [...state.data.topics].sort((a, b) => new Date(b.lastActivityAt || 0) - new Date(a.lastActivityAt || 0))
   const filtered = all.filter((topic) => topic.name.toLocaleLowerCase('ru').includes(query))
-  const pinned = filtered.filter((topic) => topic.pinned)
-  const recent = filtered.filter((topic) => !topic.pinned)
+  const general = filtered.filter((topic) => topic.threadId === 0)
+  const pinned = filtered.filter((topic) => topic.threadId !== 0 && topic.pinned)
+  const recent = filtered.filter((topic) => topic.threadId !== 0 && !topic.pinned)
+  $('#general-section').classList.toggle('hidden', general.length === 0)
   $('#pinned-section').classList.toggle('hidden', pinned.length === 0)
+  updateHtml($('#general-list'), general.map(threadMarkup).join(''))
   const pinnedList = $('#pinned-list')
   const threadsList = $('#threads-list')
   updateHtml(pinnedList, pinned.map(threadMarkup).join(''))
@@ -291,7 +294,8 @@ function renderThreads() {
 
 function threadMarkup(topic) {
   const subtitle = topic.busy ? `${escapeHtml(topic.run?.action || 'Claude работает')} · ${formatElapsed(topic.run?.startedAt)}` : topic.lastActivityAt ? `Последняя активность · ${relativeTime(topic.lastActivityAt)}` : 'Нет активной сессии'
-  return `<button class="thread-row" data-topic="${escapeHtml(topic.id)}"><span class="thread-status"><span class="status-dot ${topic.busy ? 'active' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(topic.name)}</strong><small class="${topic.busy ? 'active-copy' : ''}">${subtitle}</small></span>${topic.pinned ? `<span class="pin">${icon('pin')}</span>` : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`
+  const isGeneral = topic.threadId === 0
+  return `<button class="thread-row${isGeneral ? ' general-row' : ''}" data-topic="${escapeHtml(topic.id)}"><span class="thread-status"><span class="status-dot ${topic.busy ? 'active' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(topic.name)}</strong><small class="${topic.busy ? 'active-copy' : ''}">${isGeneral ? 'Общий чат' : subtitle}</small></span>${isGeneral ? '<span class="general-badge">Основной</span>' : topic.pinned ? `<span class="pin">${icon('pin')}</span>` : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`
 }
 
 function openTopic(id) {

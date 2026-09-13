@@ -35,6 +35,9 @@ button:disabled, input:disabled { cursor: default; opacity: .48; }
 .thread-row, .session-row, .file-row, .command-row, .setting-row, .wide-row, .action-row, .model-option, .topic-option { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
 .thread-row:last-child, .session-row:last-child, .file-row:last-child, .command-row:last-child, .setting-row:last-child, .action-row:last-child, .model-option:last-child, .topic-option:last-child { border-bottom: 0; }
 .thread-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; min-height: 72px; gap: 11px; padding: 10px 14px; }
+.general-row { background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.general-row .row-copy strong { color: var(--blue); }
+.general-badge { color: var(--blue); font-size: 12px; font-weight: 700; }
 .thread-status, .file-icon, .session-icon { position: relative; display: grid; place-items: center; width: 36px; height: 36px; color: #bcd0e3; font-size: 22px; }
 .thread-status .status-dot { width: 9px; height: 9px; }
 .session-icon .status-dot { position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border: 2px solid var(--surface); }
