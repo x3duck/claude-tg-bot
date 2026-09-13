@@ -144,7 +144,7 @@ class Progress {
   }
 
   private compose(): string {
-    if (!this.verbose || this.lines.length === 0) return '⏳ Думаю…'
+    if (!this.verbose || this.lines.length === 0) return '⏳ Передаю задачу Claude…'
     const tail = this.lines.slice(-PROGRESS_TAIL)
     const hidden = this.lines.length - tail.length
     const head = hidden > 0 ? `⏳ Работаю… (+${hidden} шагов выше)\n` : '⏳ Работаю…\n'
@@ -166,7 +166,11 @@ class Progress {
     this.closed = true
     if (this.timer) clearInterval(this.timer)
     try {
-      if (summary) await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, summary)
+      if (summary) {
+        await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, summary, {
+          reply_markup: { inline_keyboard: [] },
+        })
+      }
       else await this.ctx.api.deleteMessage(this.ctx.chat!.id, this.messageId)
     } catch {
     }
@@ -289,7 +293,11 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
   const cwd = cwdFor(scopeId)
   const rt = runtimeFor(scopeId)
 
-  const status = await ctx.reply('⏳ Думаю…')
+  const status = await ctx.reply('⏳ Передаю задачу Claude…', {
+    reply_markup: {
+      inline_keyboard: [[{ text: '⏹ Остановить', callback_data: 'run:stop' }]],
+    },
+  })
   const progress = new Progress(ctx, status.message_id, state.verbose)
   const draft = new DraftStream(ctx, scopeId)
 
@@ -583,6 +591,17 @@ bot.command('delete_topic', async (ctx) => {
       ],
     },
   })
+})
+
+bot.callbackQuery('run:stop', async (ctx) => {
+  const rt = runtimeFor(scopeFor(ctx))
+  rt.queue.length = 0
+  rt.abort?.abort()
+  await ctx.answerCallbackQuery('Останавливаю')
+  try {
+    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } })
+  } catch {
+  }
 })
 
 bot.callbackQuery(/^topic_delete:(yes|no)$/, async (ctx) => {
