@@ -44,7 +44,6 @@ button:disabled, input:disabled, select:disabled { cursor: default; opacity: .48
 .status-dot { display: inline-block; width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--muted); }
 .status-dot.active { background: var(--green); box-shadow: 0 0 0 5px color-mix(in srgb, var(--green) 14%, transparent); }
 .quiet-note { margin: 34px 0; color: var(--muted); text-align: center; font-size: 14px; }
-.telegram-button { margin-bottom: 18px; text-decoration: none; }
 .primary-button, .outline-button, .secondary-button, .danger-fill-button { width: 100%; min-height: 48px; display: grid; place-items: center; border-radius: 13px; font-weight: 650; }
 .primary-button { border: 0; background: var(--blue); color: var(--button-text); }
 .outline-button { margin-top: 12px; border: 1px solid var(--blue); background: transparent; color: var(--blue); }

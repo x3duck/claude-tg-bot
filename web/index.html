@@ -17,12 +17,10 @@
         <label class="search-field"><span>⌕</span><input id="thread-search" type="search" placeholder="Найти тред" autocomplete="off" /></label>
         <section id="pinned-section" class="thread-section hidden"><div class="section-heading"><h2>Закреплённые</h2></div><div id="pinned-list" class="card list-card"></div></section>
         <section class="thread-section"><div class="section-heading"><h2>Недавние</h2><span id="thread-count" class="muted"></span></div><div id="threads-list" class="card list-card"></div></section>
-        <p class="quiet-note">Переписка остаётся в Telegram</p>
       </section>
 
       <section class="view" data-view="detail">
         <header class="detail-topbar"><button class="icon-button" data-back aria-label="Назад">‹</button><h1 id="detail-title">Тред</h1><button id="topic-menu" class="icon-button" aria-label="Меню треда">•••</button></header>
-        <a id="open-chat" class="primary-button telegram-button hidden" target="_blank" rel="noreferrer">Открыть чат в Telegram</a>
         <section id="run-card" class="run-card card hidden"></section>
         <div class="section-heading"><h2>Параметры</h2></div>
         <section class="settings-card card"><button class="setting-row" id="model-row"><span class="setting-icon">◉</span><span>Модель</span><strong id="detail-model"></strong><span class="chevron">›</span></button><label class="setting-row"><span class="setting-icon">≋</span><span>Ход выполнения</span><input id="verbose-toggle" type="checkbox" role="switch" /></label></section>
@@ -56,7 +54,7 @@
     <dialog id="topic-actions" class="sheet"><div class="sheet-handle"></div><button id="rename-topic" class="action-row">Переименовать</button><button id="pin-topic" class="action-row">Закрепить</button><button id="delete-topic" class="action-row danger-text">Удалить тред</button><button data-close="topic-actions" class="secondary-button">Отмена</button></dialog>
     <dialog id="delete-dialog" class="sheet"><div class="sheet-handle"></div><h2>Удалить тред?</h2><p class="dialog-copy">Задача остановится, а рабочие файлы будут перенесены в архив.</p><button id="confirm-delete" class="danger-fill-button">Удалить</button><button data-close="delete-dialog" class="secondary-button">Отмена</button></dialog>
     <dialog id="delete-all-dialog" class="sheet"><div class="sheet-handle"></div><h2>Удалить все треды?</h2><p id="delete-all-copy" class="dialog-copy"></p><button id="confirm-delete-all" class="danger-fill-button">Удалить всё</button><button data-close="delete-all-dialog" class="secondary-button">Отмена</button></dialog>
-    <dialog id="preview-dialog" class="preview-dialog"><header><div><strong id="preview-name"></strong><small id="preview-meta"></small></div><button id="close-preview" aria-label="Закрыть">×</button></header><div id="preview-body" class="preview-body"></div><footer><button id="download-preview" class="primary-button">Скачать файл</button><a id="preview-chat" class="text-link hidden" target="_blank" rel="noreferrer">Открыть чат в Telegram</a></footer></dialog>
+    <dialog id="preview-dialog" class="preview-dialog"><header><div><strong id="preview-name"></strong><small id="preview-meta"></small></div><button id="close-preview" aria-label="Закрыть">×</button></header><div id="preview-body" class="preview-body"></div><footer><button id="download-preview" class="primary-button">Скачать файл</button></footer></dialog>
 
     <nav class="bottom-nav" aria-label="Основная навигация"><button class="active" data-nav="threads"><span>◯</span>Треды</button><button data-nav="files"><span>□</span>Файлы</button><button data-nav="settings"><span>⚙</span>Настройки</button></nav><div id="toast" class="toast"></div><script type="module" src="/app.js"></script>
   </body>

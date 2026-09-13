@@ -1,5 +1,4 @@
 import { mountPdfPreview } from './pdf-preview.js'
-import { topicTelegramUrl } from './telegram-link.js'
 
 const tg = window.Telegram?.WebApp
 tg?.ready()
@@ -240,10 +239,6 @@ function renderDetail() {
   $('#pin-topic').textContent = topic.pinned ? 'Открепить' : 'Закрепить'
   $('#rename-topic').classList.toggle('hidden', topic.threadId === 0)
   $('#delete-topic').classList.toggle('hidden', topic.threadId === 0)
-  const openChat = $('#open-chat')
-  const chatUrl = topicTelegramUrl(state.data.botUrl, topic.threadId)
-  openChat.classList.toggle('hidden', !chatUrl)
-  if (chatUrl) openChat.href = chatUrl
   const runCard = $('#run-card')
   runCard.classList.toggle('hidden', !topic.busy && !topic.run)
   runCard.innerHTML = topic.busy || topic.run ? `<div class="run-head"><span class="status-dot active"></span><div><strong>${topic.run?.stopping ? 'Останавливаем…' : 'Claude работает'}</strong><small>${escapeHtml(topic.run?.action || 'Выполняет текущую задачу')}</small></div></div><div class="run-meta"><span>${formatElapsed(topic.run?.startedAt)}</span><span>В очереди: ${Number(topic.queued) || 0}</span><button id="stop-run" class="stop-button" ${topic.run?.stopping || isBusy('stop') ? 'disabled' : ''}>${topic.run?.stopping ? 'Остановка…' : 'Остановить'}</button></div>` : ''
@@ -447,9 +442,6 @@ async function previewFile(file) {
   $('#preview-name').textContent = file.name
   $('#preview-meta').textContent = `${formatBytes(file.size)} · ${formatDate(file.mtime)}`
   $('#preview-body').innerHTML = '<div class="preview-fallback">Загружаем предпросмотр…</div>'
-  const chatUrl = topicTelegramUrl(state.data?.botUrl, topicById(topicId)?.threadId)
-  $('#preview-chat').classList.toggle('hidden', !chatUrl)
-  if (chatUrl) $('#preview-chat').href = chatUrl
   $('#preview-dialog').showModal()
   syncBackButton()
   try {

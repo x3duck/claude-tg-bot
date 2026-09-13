@@ -15,7 +15,6 @@ process.env.DATA_FILE = path.join(temporary, 'state.json')
 const { workspaceFor } = await import('../src/workspace.ts')
 const { browseFiles, resolveFile, uploadFile, MAX_UPLOAD_BYTES } = await import('../src/web-files.ts')
 const { changeDirectory, changeSession } = await import('../src/topic-settings.ts')
-const { topicTelegramUrl } = await import('../web/telegram-link.js')
 const { startWebServer } = await import('../src/web.ts')
 const { getChat, listChats, save, saveNow, deleteChat } = await import('../src/state.ts')
 const workspace = workspaceFor('101:1')
@@ -29,13 +28,6 @@ fs.writeFileSync(path.join(workspace.root, '.env'), 'secret')
 fs.writeFileSync(path.join(other.root, 'private.txt'), 'other user')
 fs.symlinkSync(other.root, path.join(workspace.root, 'escape'))
 after(() => fs.rmSync(temporary, { recursive: true, force: true }))
-
-test('Telegram links open the selected topic and keep General on the bot chat', () => {
-  assert.equal(topicTelegramUrl('https://t.me/example_bot', 41), 'https://t.me/example_bot/41')
-  assert.equal(topicTelegramUrl('https://t.me/example_bot/', 41), 'https://t.me/example_bot/41')
-  assert.equal(topicTelegramUrl('https://t.me/example_bot', 0), 'https://t.me/example_bot')
-  assert.equal(topicTelegramUrl(null, 41), null)
-})
 
 test('folder browsing supports inbox, sent files and pagination; excludes hidden files and symlinks', () => {
   const listing = browseFiles(context, 'workspace', '', 0)
