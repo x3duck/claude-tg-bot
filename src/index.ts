@@ -26,8 +26,10 @@ import {
   workspaceFor,
 } from './workspace.ts'
 import type { DownloadedFile, IncomingFile } from './workspace.ts'
+import { authStatus, startLogin } from './auth.ts'
 
 const bot = new Bot(BOT_TOKEN)
+let activeLogin: ReturnType<typeof startLogin> | null = null
 
 /* ------------------------------------------------------------------ доступ */
 
@@ -53,13 +55,22 @@ type Runtime = {
   lastListing: string[]
 }
 
-const runtimes = new Map<number, Runtime>()
+type ScopeId = string
 
-function runtimeFor(chatId: number): Runtime {
-  let rt = runtimes.get(chatId)
+const runtimes = new Map<ScopeId, Runtime>()
+
+function scopeFor(ctx: Context): ScopeId {
+  const chatId = ctx.chat?.id
+  if (chatId === undefined) throw new Error('Нет Telegram chat id')
+  const threadId = ctx.msg?.message_thread_id ?? 0
+  return `${chatId}:${threadId}`
+}
+
+function runtimeFor(scopeId: ScopeId): Runtime {
+  let rt = runtimes.get(scopeId)
   if (!rt) {
     rt = { queue: [], busy: false, abort: null, lastListing: [] }
-    runtimes.set(chatId, rt)
+    runtimes.set(scopeId, rt)
   }
   return rt
 }
@@ -87,9 +98,9 @@ function fmtTotals(t: UsageTotals): string {
   return `${t.runs} запр. · ${fmtTokens(t.inputTokens)}→${fmtTokens(t.outputTokens)} токенов · ${fmtCost(t.costUsd)} · ${fmtDuration(t.durationMs)}`
 }
 
-function cwdFor(chatId: number): string {
-  const state = getChat(chatId)
-  const ws = workspaceFor(chatId)
+function cwdFor(scopeId: ScopeId): string {
+  const state = getChat(scopeId)
+  const ws = workspaceFor(scopeId)
   if (state.cwd && fs.existsSync(state.cwd)) return state.cwd
   return ws.root
 }
@@ -174,11 +185,11 @@ async function sendAnswer(ctx: Context, markdown: string): Promise<void> {
 
 /* -------------------------------------------------------------- выполнение */
 
-async function execute(ctx: Context, chatId: number, job: Job): Promise<void> {
-  const state = getChat(chatId)
-  const ws = workspaceFor(chatId)
-  const cwd = cwdFor(chatId)
-  const rt = runtimeFor(chatId)
+async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> {
+  const state = getChat(scopeId)
+  const ws = workspaceFor(scopeId)
+  const cwd = cwdFor(scopeId)
+  const rt = runtimeFor(scopeId)
 
   const status = await ctx.reply('⏳ Работаю…')
   const progress = new Progress(ctx, status.message_id, state.verbose)
@@ -204,7 +215,7 @@ async function execute(ctx: Context, chatId: number, job: Job): Promise<void> {
         if (e.type === 'session') {
           if (state.sessionId !== e.sessionId) {
             state.sessionId = e.sessionId
-            rememberSession(chatId, {
+            rememberSession(scopeId, {
               id: e.sessionId,
               title: job.prompt.slice(0, 60),
               startedAt: new Date().toISOString(),
@@ -225,7 +236,7 @@ async function execute(ctx: Context, chatId: number, job: Job): Promise<void> {
       save()
     }
 
-    addUsage(chatId, result)
+    addUsage(scopeId, result)
 
     const secs = Math.round(result.durationMs / 1000)
     const summary = state.verbose
@@ -244,6 +255,9 @@ async function execute(ctx: Context, chatId: number, job: Job): Promise<void> {
       console.error('[run] ошибка выполнения:', err)
       const message = err instanceof Error ? err.message : String(err)
       await ctx.reply(`❌ Не получилось выполнить:\n${message.slice(0, 1500)}`)
+      if (/authenticate|oauth session expired|not logged in/i.test(message)) {
+        await ctx.reply('Авторизация Claude истекла. Запусти /login прямо здесь.')
+      }
     }
   } finally {
     rt.abort = null
@@ -275,28 +289,28 @@ async function sendArtifacts(
   }
 }
 
-async function drain(ctx: Context, chatId: number): Promise<void> {
-  const rt = runtimeFor(chatId)
+async function drain(ctx: Context, scopeId: ScopeId): Promise<void> {
+  const rt = runtimeFor(scopeId)
   if (rt.busy) return
   rt.busy = true
   try {
     while (rt.queue.length > 0) {
       const job = rt.queue.shift()!
-      await execute(ctx, chatId, job)
+      await execute(ctx, scopeId, job)
     }
   } finally {
     rt.busy = false
   }
 }
 
-async function enqueue(ctx: Context, chatId: number, job: Job): Promise<void> {
-  const rt = runtimeFor(chatId)
+async function enqueue(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> {
+  const rt = runtimeFor(scopeId)
   rt.queue.push(job)
   if (rt.busy) {
     await ctx.reply(`⏳ Занят текущей задачей — поставил в очередь (${rt.queue.length}).`)
     return
   }
-  void drain(ctx, chatId)
+  void drain(ctx, scopeId)
 }
 
 /* ------------------------------------------------------------------ команды */
@@ -321,6 +335,8 @@ const HELP = [
   '/verbose on|off — показывать ли ход выполнения',
   '/status — текущее состояние',
   '/usage — лимиты подписки и расход бота',
+  '/auth_status — проверить авторизацию Claude',
+  '/login — обновить авторизацию Claude',
   '',
   '<b>Файлы</b>',
   '/files — последние файлы рабочей папки',
@@ -329,7 +345,7 @@ const HELP = [
   '/clean — удалить все файлы чата',
   '',
   'Всё, что модель кладёт в папку <code>outbox</code>, приходит сюда автоматически.',
-  'Файлы общие для всех сессий чата: /new забывает контекст, но не удаляет их.',
+  'У каждой темы свои сессия, очередь, настройки и файлы.',
 ].join('\n')
 
 bot.command('start', async (ctx) => {
@@ -340,16 +356,63 @@ bot.command('help', async (ctx) => {
   await ctx.reply(HELP, { parse_mode: 'HTML' })
 })
 
+bot.command('auth_status', async (ctx) => {
+  await ctx.reply((await authStatus()) ? '✅ Claude авторизован.' : '⚠️ Claude требует входа. Запусти /login.')
+})
+
+bot.command('login', async (ctx) => {
+  if (activeLogin) {
+    await ctx.reply('Вход уже запущен. Открой присланную ссылку или отправь /auth_code.')
+    return
+  }
+  if (await authStatus()) {
+    await ctx.reply('✅ Claude уже авторизован.')
+    return
+  }
+
+  await ctx.reply('Запускаю вход Claude…')
+  activeLogin = startLogin({
+    onUrl: (url) => {
+      void ctx.reply('Открой Claude и подтверди вход. Если сайт покажет код, пришли его командой /auth_code &lt;код&gt;.', {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[{ text: 'Войти в Claude', url }]] },
+      })
+    },
+    onDone: (ok, message) => {
+      activeLogin = null
+      void ctx.reply(`${ok ? '✅' : '⚠️'} ${message}`)
+    },
+  })
+})
+
+bot.command('auth_code', async (ctx) => {
+  const code = ctx.match.trim()
+  try {
+    await ctx.deleteMessage()
+  } catch {}
+  if (!activeLogin) {
+    await ctx.reply('Нет ожидающего входа. Сначала запусти /login.')
+    return
+  }
+  if (!code) {
+    await ctx.reply('Пришли код так: /auth_code &lt;код&gt;', { parse_mode: 'HTML' })
+    return
+  }
+  activeLogin.stdin.write(`${code}\n`)
+  await ctx.reply('Код передан Claude, проверяю вход…')
+})
+
 bot.command('new', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const scopeId = scopeFor(ctx)
+  const state = getChat(scopeId)
   state.sessionId = null
   save()
-  resetSessionUsage(ctx.chat.id)
+  resetSessionUsage(scopeId)
   await ctx.reply('🆕 Начал новую сессию. Прежний контекст забыт.')
 })
 
 bot.command('usage', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const state = getChat(scopeFor(ctx))
   const lines: string[] = []
 
   try {
@@ -386,12 +449,12 @@ bot.command('usage', async (ctx) => {
 })
 
 bot.command('status', async (ctx) => {
-  const chatId = ctx.chat.id
-  const state = getChat(chatId)
-  const rt = runtimeFor(chatId)
+  const scopeId = scopeFor(ctx)
+  const state = getChat(scopeId)
+  const rt = runtimeFor(scopeId)
   const lines = [
     `<b>Модель:</b> ${state.model}`,
-    `<b>Директория:</b> <code>${cwdFor(chatId)}</code>`,
+    `<b>Директория:</b> <code>${cwdFor(scopeId)}</code>`,
     `<b>Сессия:</b> ${state.sessionId ? `<code>${state.sessionId.slice(0, 8)}…</code>` : 'новая'}`,
     `<b>Ход выполнения:</b> ${state.verbose ? 'показываю' : 'скрыт'}`,
     `<b>Очередь:</b> ${rt.busy ? `выполняется, в очереди ${rt.queue.length}` : 'свободен'}`,
@@ -400,7 +463,7 @@ bot.command('status', async (ctx) => {
 })
 
 bot.command('stop', async (ctx) => {
-  const rt = runtimeFor(ctx.chat.id)
+  const rt = runtimeFor(scopeFor(ctx))
   const queued = rt.queue.length
   rt.queue.length = 0
   if (rt.abort) {
@@ -414,7 +477,7 @@ bot.command('stop', async (ctx) => {
 })
 
 bot.command('verbose', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const state = getChat(scopeFor(ctx))
   const arg = ctx.match.trim().toLowerCase()
   if (arg === 'on' || arg === 'off') state.verbose = arg === 'on'
   else state.verbose = !state.verbose
@@ -423,13 +486,14 @@ bot.command('verbose', async (ctx) => {
 })
 
 bot.command('pwd', async (ctx) => {
-  await ctx.reply(`<code>${cwdFor(ctx.chat.id)}</code>`, { parse_mode: 'HTML' })
+  await ctx.reply(`<code>${cwdFor(scopeFor(ctx))}</code>`, { parse_mode: 'HTML' })
 })
 
 bot.command('cd', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const scopeId = scopeFor(ctx)
+  const state = getChat(scopeId)
   const arg = ctx.match.trim()
-  const ws = workspaceFor(ctx.chat.id)
+  const ws = workspaceFor(scopeId)
 
   if (!arg || arg === '~') {
     state.cwd = null
@@ -438,7 +502,7 @@ bot.command('cd', async (ctx) => {
     return
   }
 
-  const target = path.resolve(cwdFor(ctx.chat.id), arg.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
+  const target = path.resolve(cwdFor(scopeId), arg.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
   if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
     await ctx.reply(`Нет такой директории:\n<code>${target}</code>`, { parse_mode: 'HTML' })
     return
@@ -449,7 +513,7 @@ bot.command('cd', async (ctx) => {
 })
 
 bot.command('model', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const state = getChat(scopeFor(ctx))
   await ctx.reply(`Текущая модель: <b>${state.model}</b>\nВыбери другую:`, {
     parse_mode: 'HTML',
     reply_markup: {
@@ -466,7 +530,7 @@ bot.callbackQuery(/^model:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery('Неизвестная модель')
     return
   }
-  const state = getChat(ctx.chat!.id)
+  const state = getChat(scopeFor(ctx))
   state.model = id
   save()
   await ctx.answerCallbackQuery(`Модель: ${id}`)
@@ -474,16 +538,17 @@ bot.callbackQuery(/^model:(.+)$/, async (ctx) => {
 })
 
 bot.command('tldr', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const scopeId = scopeFor(ctx)
+  const state = getChat(scopeId)
   if (!state.sessionId) {
     await ctx.reply('Нет активной сессии — сжимать нечего.')
     return
   }
-  await enqueue(ctx, ctx.chat.id, { prompt: 'ELI18 TLDR', files: [] })
+  await enqueue(ctx, scopeId, { prompt: 'ELI18 TLDR', files: [] })
 })
 
 bot.command('sessions', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const state = getChat(scopeFor(ctx))
   if (state.sessions.length === 0) {
     await ctx.reply('Сохранённых сессий пока нет.')
     return
@@ -497,7 +562,8 @@ bot.command('sessions', async (ctx) => {
 })
 
 bot.command('resume', async (ctx) => {
-  const state = getChat(ctx.chat.id)
+  const scopeId = scopeFor(ctx)
+  const state = getChat(scopeId)
   const n = Number(ctx.match.trim())
   const target = state.sessions[n - 1]
   if (!Number.isFinite(n) || !target) {
@@ -508,20 +574,20 @@ bot.command('resume', async (ctx) => {
   state.sessionId = target.id
   if (target.cwd && fs.existsSync(target.cwd)) state.cwd = target.cwd
   save()
-  if (switching) resetSessionUsage(ctx.chat.id)
+  if (switching) resetSessionUsage(scopeId)
   await ctx.reply(`↩️ Вернулся к сессии: ${target.title || target.id.slice(0, 8)}`)
 })
 
 bot.command('files', async (ctx) => {
-  const chatId = ctx.chat.id
-  const ws = workspaceFor(chatId)
-  const cwd = cwdFor(chatId)
+  const scopeId = scopeFor(ctx)
+  const ws = workspaceFor(scopeId)
+  const cwd = cwdFor(scopeId)
   const files = listFiles(ws, cwd)
   if (files.length === 0) {
     await ctx.reply('Файлов пока нет.')
     return
   }
-  const rt = runtimeFor(chatId)
+  const rt = runtimeFor(scopeId)
   rt.lastListing = files.map((f) => f.path)
   const lines = files.map((f, i) => {
     const name = f.sent
@@ -533,8 +599,8 @@ bot.command('files', async (ctx) => {
 })
 
 bot.command('get', async (ctx) => {
-  const chatId = ctx.chat.id
-  const rt = runtimeFor(chatId)
+  const scopeId = scopeFor(ctx)
+  const rt = runtimeFor(scopeId)
   const arg = ctx.match.trim()
   if (!arg) {
     await ctx.reply('Укажи номер из /files или путь к файлу.')
@@ -542,7 +608,7 @@ bot.command('get', async (ctx) => {
   }
 
   const n = Number(arg)
-  const target = Number.isFinite(n) ? rt.lastListing[n - 1] : path.resolve(cwdFor(chatId), arg)
+  const target = Number.isFinite(n) ? rt.lastListing[n - 1] : path.resolve(cwdFor(scopeId), arg)
 
   if (!target || !fs.existsSync(target) || !fs.statSync(target).isFile()) {
     await ctx.reply('Не нашёл такой файл. Обнови список через /files.')
@@ -557,9 +623,9 @@ bot.command('get', async (ctx) => {
 })
 
 bot.command('rm', async (ctx) => {
-  const chatId = ctx.chat.id
-  const rt = runtimeFor(chatId)
-  const ws = workspaceFor(chatId)
+  const scopeId = scopeFor(ctx)
+  const rt = runtimeFor(scopeId)
+  const ws = workspaceFor(scopeId)
   const arg = ctx.match.trim()
 
   if (!arg) {
@@ -568,7 +634,7 @@ bot.command('rm', async (ctx) => {
   }
 
   const n = Number(arg)
-  const target = Number.isFinite(n) ? rt.lastListing[n - 1] : path.resolve(cwdFor(chatId), arg)
+  const target = Number.isFinite(n) ? rt.lastListing[n - 1] : path.resolve(cwdFor(scopeId), arg)
 
   if (!target || !fs.existsSync(target)) {
     await ctx.reply('Не нашёл такой файл. Обнови список через /files.')
@@ -586,7 +652,7 @@ bot.command('rm', async (ctx) => {
 })
 
 bot.command('clean', async (ctx) => {
-  const ws = workspaceFor(ctx.chat.id)
+  const ws = workspaceFor(scopeFor(ctx))
   const count = listFiles(ws, ws.root).length
   if (count === 0) {
     await ctx.reply('В рабочей папке и так пусто.')
@@ -608,9 +674,9 @@ bot.callbackQuery(/^clean:(yes|no)$/, async (ctx) => {
     await ctx.editMessageText('Отменил, всё на месте.')
     return
   }
-  const chatId = ctx.chat!.id
-  const removed = clearWorkspaceFiles(workspaceFor(chatId))
-  runtimeFor(chatId).lastListing = []
+  const scopeId = scopeFor(ctx)
+  const removed = clearWorkspaceFiles(workspaceFor(scopeId))
+  runtimeFor(scopeId).lastListing = []
   await ctx.answerCallbackQuery(`Удалено: ${removed}`)
   await ctx.editMessageText(`🗑 Удалил ${removed} файл(ов). Контекст сессии не тронут — для него /new.`)
 })
@@ -668,8 +734,8 @@ function extractFiles(ctx: Context): IncomingFile[] {
 }
 
 async function handleIncoming(ctx: Context, files: IncomingFile[], text: string): Promise<void> {
-  const chatId = ctx.chat!.id
-  const ws = workspaceFor(chatId)
+  const scopeId = scopeFor(ctx)
+  const ws = workspaceFor(scopeId)
 
   const downloaded: DownloadedFile[] = []
   for (const f of files) {
@@ -688,7 +754,7 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
     await ctx.reply(`📎 Принял ${downloaded.length} файл(ов) → inbox`)
   }
 
-  await enqueue(ctx, chatId, { prompt, files: downloaded })
+  await enqueue(ctx, scopeId, { prompt, files: downloaded })
 }
 
 bot.on('message', async (ctx) => {
@@ -704,7 +770,7 @@ bot.on('message', async (ctx) => {
   // Альбом приходит несколькими апдейтами — собираем их вместе
   const groupId = m.media_group_id
   if (groupId) {
-    const key = `${ctx.chat.id}:${groupId}`
+    const key = `${scopeFor(ctx)}:${groupId}`
     const existing = mediaGroups.get(key)
     if (existing) {
       existing.files.push(...files)

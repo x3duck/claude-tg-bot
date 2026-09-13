@@ -76,9 +76,18 @@ export function saveNow(): void {
   }
 }
 
-export function getChat(chatId: number): ChatState {
-  const key = String(chatId)
+export function getChat(scopeId: string | number): ChatState {
+  const key = String(scopeId)
   let s = store[key]
+  if (!s && key.endsWith(':0')) {
+    const legacyKey = key.slice(0, -2)
+    s = store[legacyKey]
+    if (s) {
+      store[key] = s
+      delete store[legacyKey]
+      save()
+    }
+  }
   if (!s) {
     s = {
       cwd: null,
@@ -90,7 +99,6 @@ export function getChat(chatId: number): ChatState {
     }
     store[key] = s
   }
-  // Состояние могло быть записано версией бота без счётчиков
   if (!s.usage) s.usage = { session: emptyTotals(), total: emptyTotals() }
   if (!s.usage.session) s.usage.session = emptyTotals()
   if (!s.usage.total) s.usage.total = emptyTotals()
@@ -98,10 +106,10 @@ export function getChat(chatId: number): ChatState {
 }
 
 export function addUsage(
-  chatId: number,
+  scopeId: string | number,
   run: { costUsd: number; inputTokens: number; outputTokens: number; durationMs: number },
 ): void {
-  const s = getChat(chatId)
+  const s = getChat(scopeId)
   for (const t of [s.usage.session, s.usage.total]) {
     t.runs += 1
     t.costUsd += run.costUsd
@@ -113,13 +121,13 @@ export function addUsage(
 }
 
 /** Счётчик сессии обнуляется при /new и при переходе на другую сессию. */
-export function resetSessionUsage(chatId: number): void {
-  getChat(chatId).usage.session = emptyTotals()
+export function resetSessionUsage(scopeId: string | number): void {
+  getChat(scopeId).usage.session = emptyTotals()
   save()
 }
 
-export function rememberSession(chatId: number, session: SessionRecord): void {
-  const s = getChat(chatId)
+export function rememberSession(scopeId: string | number, session: SessionRecord): void {
+  const s = getChat(scopeId)
   const existing = s.sessions.find((x) => x.id === session.id)
   if (existing) {
     existing.title = session.title || existing.title

@@ -11,8 +11,8 @@ export type Workspace = {
   sent: string
 }
 
-export function workspaceFor(chatId: number): Workspace {
-  const root = path.join(WORKSPACES_DIR, String(chatId))
+export function workspaceFor(scopeId: string | number): Workspace {
+  const root = path.join(WORKSPACES_DIR, String(scopeId).replace(':', '_'))
   const ws: Workspace = {
     root,
     inbox: path.join(root, 'inbox'),
