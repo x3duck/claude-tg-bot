@@ -154,7 +154,7 @@ export async function runPrompt(p: RunParams): Promise<RunResult> {
     switch (msg.type) {
       case 'stream_event': {
         if (msg.parent_tool_use_id !== null) break
-        if (msg.event.type === 'message_start') partialText = ''
+        if (msg.event.type === 'message_start' && partialText && !partialText.endsWith('\n')) partialText += '\n\n'
         if (msg.event.type === 'content_block_delta' && msg.event.delta.type === 'text_delta') {
           partialText += msg.event.delta.text
           p.onEvent({ type: 'partial', text: partialText })

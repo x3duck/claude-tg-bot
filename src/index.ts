@@ -128,6 +128,8 @@ class Progress {
   private timer: NodeJS.Timeout | null = null
   private closed = false
   private lastSentAt = 0
+  private dirty = false
+  private flushTask: Promise<void> | null = null
 
   private readonly ctx: Context
   private readonly draftId: number
@@ -138,8 +140,8 @@ class Progress {
     this.draftId = nextDraftId++
     draftScopes.set(this.draftId, scopeFor(ctx))
     this.verbose = verbose
-    this.timer = setInterval(() => void this.flush(), Math.min(PROGRESS_INTERVAL_MS, 1000))
-    void this.flush()
+    this.timer = setInterval(() => this.requestFlush(), Math.min(PROGRESS_INTERVAL_MS, 1000))
+    this.requestFlush()
   }
 
   add(line: string): void {
@@ -165,26 +167,38 @@ class Progress {
     return head + tail.map((l) => `· ${l}`).join('\n')
   }
 
-  private async flush(): Promise<void> {
+  private requestFlush(): void {
     if (this.closed) return
-    const text = this.compose().slice(0, 3800)
-    if (text === this.rendered && Date.now() - this.lastSentAt < 20_000) return
-    this.rendered = text
-    this.lastSentAt = Date.now()
-    try {
-      await this.ctx.api.sendMessageDraft(this.ctx.chat!.id, this.draftId, text, {
-        message_thread_id: this.ctx.msg?.message_thread_id,
-        can_stop: true,
-        keep_on_stop: true,
-      })
-    } catch {
+    this.dirty = true
+    if (!this.flushTask) this.flushTask = this.flush().finally(() => (this.flushTask = null))
+  }
+
+  private async flush(): Promise<void> {
+    while (this.dirty && !this.closed) {
+      this.dirty = false
+      const text = this.compose().slice(0, 3800)
+      if (text === this.rendered && Date.now() - this.lastSentAt < 20_000) continue
+      this.rendered = text
+      this.lastSentAt = Date.now()
+      try {
+        await this.ctx.api.sendMessageDraft(this.ctx.chat!.id, this.draftId, text, {
+          message_thread_id: this.ctx.msg?.message_thread_id,
+          can_stop: true,
+          keep_on_stop: true,
+        })
+      } catch {
+      }
     }
   }
 
-  finish(): void {
+  async finish(): Promise<void> {
     this.closed = true
     draftScopes.delete(this.draftId)
     if (this.timer) clearInterval(this.timer)
+    try {
+      await this.flushTask
+    } catch {
+    }
   }
 }
 
@@ -268,17 +282,17 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     const summary = state.verbose
       ? `✅ ${secs} с · ${result.toolCalls} инстр. · ${fmtTokens(result.inputTokens)}→${fmtTokens(result.outputTokens)} токенов`
       : null
-    progress.finish()
+    await progress.finish()
     if (abort.signal.aborted) await ctx.reply('⏹ Остановлено')
-    else if (summary) await ctx.reply(summary)
 
     if (result.text) await sendAnswer(ctx, result.text)
     else if (!abort.signal.aborted) await ctx.reply('(модель не вернула текст)')
+    if (!abort.signal.aborted && summary) await ctx.reply(summary)
 
     await sendArtifacts(ctx, ws, cwd, since, result.text)
   } catch (err) {
     const aborted = abort.signal.aborted || (err instanceof Error && err.name === 'AbortError')
-    progress.finish()
+    await progress.finish()
     if (aborted) await ctx.reply('⏹ Остановлено')
     if (!aborted) {
       console.error('[run] ошибка выполнения:', err)
