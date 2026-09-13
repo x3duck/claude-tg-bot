@@ -3,121 +3,61 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#17212b" />
+    <meta name="theme-color" content="#0d1924" />
     <title>Vesperloop</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   </head>
   <body>
+    <div id="demo-badge" class="demo-badge hidden">DEMO</div>
     <main id="app" class="app-shell">
       <section class="view active" data-view="threads">
-        <header class="topbar">
-          <div><h1>Vesperloop</h1><p id="sync-state">Обновляется автоматически</p></div>
-          <button id="create-topic" class="round-button" aria-label="Создать тред">＋</button>
-        </header>
-        <section class="usage-card card">
-          <div class="section-heading"><h2>Лимиты</h2><button class="text-button" data-nav="settings">Подробнее</button></div>
-          <div id="limits" class="limits"></div>
-        </section>
-        <label class="search-field"><span>⌕</span><input id="thread-search" type="search" placeholder="Найти тред" /></label>
-        <div class="section-heading list-heading"><h2>Треды</h2><span id="thread-count" class="muted"></span></div>
-        <section id="threads-list" class="list-card card"></section>
+        <header class="topbar"><div><h1>Треды</h1><p id="sync-state">Загрузка…</p></div><button id="create-topic" class="round-button" aria-label="Создать тред" disabled>＋</button></header>
+        <div id="overview-message" class="notice hidden"></div>
+        <label class="search-field"><span>⌕</span><input id="thread-search" type="search" placeholder="Найти тред" autocomplete="off" /></label>
+        <section id="pinned-section" class="thread-section hidden"><div class="section-heading"><h2>Закреплённые</h2></div><div id="pinned-list" class="card list-card"></div></section>
+        <section class="thread-section"><div class="section-heading"><h2>Недавние</h2><span id="thread-count" class="muted"></span></div><div id="threads-list" class="card list-card"></div></section>
+        <p class="quiet-note">Переписка остаётся в Telegram</p>
       </section>
 
       <section class="view" data-view="detail">
-        <header class="detail-topbar">
-          <button class="icon-button" data-nav="threads" aria-label="Назад">‹</button>
-          <button id="rename-topic" class="title-button"><h1 id="detail-title">Тред</h1><small>Нажми, чтобы переименовать</small></button>
-          <button id="delete-topic" class="icon-button trash-button" aria-label="Удалить тред">⌫</button>
-        </header>
+        <header class="detail-topbar"><button class="icon-button" data-back aria-label="Назад">‹</button><h1 id="detail-title">Тред</h1><button id="topic-menu" class="icon-button" aria-label="Меню треда">•••</button></header>
+        <a id="open-chat" class="primary-button telegram-button hidden" target="_blank" rel="noreferrer">Открыть чат в Telegram</a>
         <section id="run-card" class="run-card card hidden"></section>
-        <section class="settings-card card">
-          <button class="setting-row" id="model-row"><span class="setting-icon">◉</span><span>Модель</span><strong id="detail-model"></strong><span class="chevron">›</span></button>
-          <button class="setting-row" id="cwd-row"><span class="setting-icon">⌁</span><span>Директория</span><strong id="detail-cwd" class="mono"></strong><span class="chevron">›</span></button>
-          <label class="setting-row"><span class="setting-icon">≋</span><span>Ход выполнения</span><input id="verbose-toggle" type="checkbox" role="switch" /></label>
-        </section>
-        <div class="section-heading list-heading"><h2>Сессии</h2></div>
-        <section id="sessions-list" class="list-card card"></section>
-        <button id="new-session" class="primary-button">Новая Claude-сессия</button>
+        <div class="section-heading"><h2>Параметры</h2></div>
+        <section class="settings-card card"><button class="setting-row" id="model-row"><span class="setting-icon">◉</span><span>Модель</span><strong id="detail-model"></strong><span class="chevron">›</span></button><label class="setting-row"><span class="setting-icon">≋</span><span>Ход выполнения</span><input id="verbose-toggle" type="checkbox" role="switch" /></label></section>
+        <button id="thread-files" class="wide-row card"><span class="setting-icon">□</span><span><strong>Файлы треда</strong><small>Папка треда и рабочая директория</small></span><span class="chevron">›</span></button>
+        <div class="section-heading"><h2>Сессии Claude</h2></div><section id="sessions-list" class="card list-card"></section>
+        <button id="new-session" class="outline-button">＋ Новая сессия</button><p class="section-note centered">Новый контекст для сообщений в этом треде</p>
+        <button id="advanced-row" class="wide-row card"><span class="setting-icon">⚙</span><span><strong>Дополнительно</strong><small id="detail-cwd" class="mono"></small></span><span class="chevron">›</span></button>
       </section>
 
       <section class="view" data-view="files">
-        <header class="topbar compact"><div><h1>Файлы</h1><p id="files-topic-name">Текущий тред</p></div></header>
-        <button id="workspace-path" class="path-card card mono">—</button>
-        <section id="files-list" class="list-card card files-list"></section>
-        <p class="section-note">Нажми на файл, чтобы скачать его. Показываются последние 30 файлов выбранного треда.</p>
-      </section>
-
-      <section class="view" data-view="commands">
-        <header class="topbar compact"><div><h1>Команды</h1><p>Нажми, чтобы скопировать</p></div></header>
-        <section id="commands-list" class="command-groups"></section>
+        <header class="topbar"><div><h1>Файлы</h1><p id="files-subtitle">Выбери тред</p></div><button id="upload-button" class="round-button" aria-label="Загрузить файл">↑</button></header><input id="upload-input" type="file" hidden />
+        <label class="select-card card"><span class="setting-icon">□</span><select id="files-topic"></select><span class="chevron">⌄</span></label>
+        <div class="segmented" role="group" aria-label="Корень файлов"><button data-root="workspace" class="active">Папка треда</button><button data-root="cwd">Рабочая папка</button></div>
+        <nav id="breadcrumbs" class="breadcrumbs"></nav><div id="files-message" class="notice hidden"></div><section id="files-list" class="card list-card files-list"></section>
+        <button id="load-more-files" class="secondary-button hidden">Загрузить ещё</button><button id="refresh-files" class="secondary-button hidden">Обновить с начала</button><p class="section-note">Файл сохранится в <span class="mono">inbox</span> выбранного треда. Затем укажи его в сообщении боту.</p>
       </section>
 
       <section class="view" data-view="settings">
-        <header class="topbar compact"><h1>Настройки</h1><span id="auth-chip" class="chip success">Подключён</span></header>
-        <div class="section-heading list-heading"><h2>Claude</h2></div>
-        <section class="auth-card card">
-          <div class="auth-icon">C</div>
-          <div><h2 id="auth-state">Проверяем…</h2><p id="auth-checked">Статус ещё не проверен</p></div>
-          <button id="refresh-auth" class="small-button">Проверить</button>
-        </section>
-        <div class="section-heading list-heading"><h2>Обновление</h2></div>
-        <section class="settings-card card">
-          <div class="setting-row"><span class="setting-icon">↻</span><span>Треды и файлы</span><strong>каждые 4 сек.</strong></div>
-          <div class="setting-row"><span class="setting-icon">◷</span><span>Последнее обновление</span><strong id="last-update">—</strong></div>
-        </section>
-        <p class="section-note">Лимиты и авторизация проверяются отдельно, чтобы не запускать Claude CLI каждые несколько секунд.</p>
-        <div class="section-heading list-heading"><h2>Опасная зона</h2></div>
-        <button id="delete-all-topics" class="danger-setting card">
-          <span><strong>Удалить все треды</strong><small>Остановить задачи и сбросить состояние</small></span>
-          <span id="delete-all-count" class="chevron"></span>
-        </button>
+        <header class="topbar"><div><h1>Настройки</h1><p>Claude и Mini App</p></div><span id="auth-chip" class="chip">Проверяем</span></header>
+        <section class="auth-card card"><span id="auth-dot" class="status-dot"></span><div><h2 id="auth-state">Проверяем…</h2><p id="auth-checked">Статус ещё не получен</p></div><button id="refresh-auth" class="small-button">Обновить</button></section>
+        <div class="section-heading"><h2>Лимиты</h2></div><section id="limits" class="limits-card card"></section>
+        <div class="section-heading"><h2>О приложении</h2></div><section class="settings-card card"><div class="setting-row"><span class="setting-icon">↻</span><span>Обзор тредов</span><strong>каждые 4 сек.</strong></div><div class="setting-row"><span class="setting-icon">◷</span><span>Последнее обновление</span><strong id="last-update">—</strong></div><button id="commands-toggle" class="setting-row"><span class="setting-icon">⌘</span><span>Команды бота</span><strong>Справка</strong><span class="chevron">⌄</span></button></section>
+        <section id="commands-list" class="command-groups hidden"></section>
+        <div class="section-heading danger-heading"><h2>Опасная зона</h2></div><button id="delete-all-topics" class="danger-setting card"><span><strong>Удалить все треды</strong><small>Остановить задачи и архивировать файлы</small></span><span id="delete-all-count" class="chevron"></span></button>
       </section>
     </main>
 
-    <dialog id="model-dialog" class="sheet">
-      <div class="sheet-handle"></div>
-      <div class="section-heading"><h2>Выбери модель</h2><button data-close="model-dialog" class="text-button">Закрыть</button></div>
-      <div id="model-options" class="model-options"></div>
-    </dialog>
-    <dialog id="topic-dialog" class="sheet">
-      <form id="topic-form">
-        <div class="sheet-handle"></div>
-        <div class="section-heading"><h2 id="topic-dialog-title">Новый тред</h2><button type="button" data-close="topic-dialog" class="text-button">Закрыть</button></div>
-        <label class="field-label">Название<input id="topic-name" maxlength="128" autocomplete="off" /></label>
-        <button id="topic-submit" class="primary-button" type="submit">Создать</button>
-      </form>
-    </dialog>
-    <dialog id="cwd-dialog" class="sheet">
-      <form id="cwd-form">
-        <div class="sheet-handle"></div>
-        <div class="section-heading"><h2>Рабочая директория</h2><button type="button" data-close="cwd-dialog" class="text-button">Закрыть</button></div>
-        <label class="field-label">Путь<input id="cwd-input" class="mono" autocomplete="off" /></label>
-        <button class="primary-button" type="submit">Сохранить</button>
-      </form>
-    </dialog>
-    <dialog id="delete-dialog" class="sheet">
-      <div class="sheet-handle"></div>
-      <h2>Удалить тред?</h2>
-      <p class="dialog-copy">Сообщения исчезнут из Telegram, а рабочие файлы будут перенесены в архив.</p>
-      <button id="confirm-delete" class="danger-fill-button">Удалить</button>
-      <button data-close="delete-dialog" class="secondary-button">Отмена</button>
-    </dialog>
-    <dialog id="delete-all-dialog" class="sheet">
-      <div class="sheet-handle"></div>
-      <h2>Удалить все треды?</h2>
-      <p id="delete-all-copy" class="dialog-copy">Все задачи будут остановлены. Темы исчезнут из Telegram, а рабочие файлы будут перенесены в архив.</p>
-      <button id="confirm-delete-all" class="danger-fill-button">Удалить всё</button>
-      <button data-close="delete-all-dialog" class="secondary-button">Отмена</button>
-    </dialog>
+    <dialog id="model-dialog" class="sheet"><div class="sheet-handle"></div><div class="sheet-head"><h2>Выбери модель</h2><button data-close="model-dialog">Закрыть</button></div><div id="model-options"></div></dialog>
+    <dialog id="topic-dialog" class="sheet"><form id="topic-form"><div class="sheet-handle"></div><div class="sheet-head"><h2 id="topic-dialog-title">Новый тред</h2><button type="button" data-close="topic-dialog">Закрыть</button></div><label class="field-label">Название<input id="topic-name" maxlength="128" autocomplete="off" /></label><button id="topic-submit" class="primary-button" type="submit">Создать</button></form></dialog>
+    <dialog id="cwd-dialog" class="sheet"><form id="cwd-form"><div class="sheet-handle"></div><div class="sheet-head"><h2>Рабочая директория</h2><button type="button" data-close="cwd-dialog">Закрыть</button></div><label class="field-label">Абсолютный путь<input id="cwd-input" class="mono" autocomplete="off" /></label><button class="primary-button" type="submit">Сохранить</button></form></dialog>
+    <dialog id="topic-actions" class="sheet"><div class="sheet-handle"></div><button id="rename-topic" class="action-row">Переименовать</button><button id="pin-topic" class="action-row">Закрепить</button><button id="delete-topic" class="action-row danger-text">Удалить тред</button><button data-close="topic-actions" class="secondary-button">Отмена</button></dialog>
+    <dialog id="delete-dialog" class="sheet"><div class="sheet-handle"></div><h2>Удалить тред?</h2><p class="dialog-copy">Задача остановится, а рабочие файлы будут перенесены в архив.</p><button id="confirm-delete" class="danger-fill-button">Удалить</button><button data-close="delete-dialog" class="secondary-button">Отмена</button></dialog>
+    <dialog id="delete-all-dialog" class="sheet"><div class="sheet-handle"></div><h2>Удалить все треды?</h2><p id="delete-all-copy" class="dialog-copy"></p><button id="confirm-delete-all" class="danger-fill-button">Удалить всё</button><button data-close="delete-all-dialog" class="secondary-button">Отмена</button></dialog>
+    <dialog id="preview-dialog" class="preview-dialog"><header><div><strong id="preview-name"></strong><small id="preview-meta"></small></div><button id="close-preview" aria-label="Закрыть">×</button></header><div id="preview-body" class="preview-body"></div><footer><button id="download-preview" class="primary-button">Скачать файл</button><a id="preview-chat" class="text-link hidden" target="_blank" rel="noreferrer">Открыть чат в Telegram</a></footer></dialog>
 
-    <nav class="bottom-nav" aria-label="Основная навигация">
-      <button class="active" data-nav="threads"><span>◯</span>Треды</button>
-      <button data-nav="files"><span>▱</span>Файлы</button>
-      <button data-nav="commands"><span>⌘</span>Команды</button>
-      <button data-nav="settings"><span>⚙</span>Настройки</button>
-    </nav>
-    <div id="toast" class="toast"></div>
-    <script type="module" src="/app.js"></script>
+    <nav class="bottom-nav" aria-label="Основная навигация"><button class="active" data-nav="threads"><span>◯</span>Треды</button><button data-nav="files"><span>□</span>Файлы</button><button data-nav="settings"><span>⚙</span>Настройки</button></nav><div id="toast" class="toast"></div><script type="module" src="/app.js"></script>
   </body>
 </html>

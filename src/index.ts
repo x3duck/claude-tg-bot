@@ -1,6 +1,5 @@
 import path from 'node:path'
 import fs from 'node:fs'
-import { createHash } from 'node:crypto'
 import { Bot, InputFile } from 'grammy'
 import type { Context } from 'grammy'
 import {
@@ -32,6 +31,8 @@ import {
 import type { DownloadedFile, IncomingFile } from './workspace.ts'
 import { authStatus, startLogin } from './auth.ts'
 import { startWebServer } from './web.ts'
+import { browseFiles, resolveFile, uploadFile } from './web-files.ts'
+import { changeDirectory, changeSession } from './topic-settings.ts'
 
 const bot = new Bot(BOT_TOKEN)
 let activeLogin: ReturnType<typeof startLogin> | null = null
@@ -43,6 +44,11 @@ bot.use(async (ctx, next) => {
   if (!userId || !ALLOWED_USER_IDS.has(userId)) return // чужие не получают вообще ничего
   const chatType = ctx.chat?.type
   if (chatType && chatType !== 'private') return // только личка
+  if (ctx.chat) {
+    const scopeId = scopeFor(ctx)
+    if (runtimes.get(scopeId)?.deleting || (deletedScopes.get(scopeId) ?? 0) > Date.now()) return
+    deletedScopes.delete(scopeId)
+  }
   await next()
 })
 
@@ -58,11 +64,15 @@ type Runtime = {
   busy: boolean
   abort: AbortController | null
   lastListing: string[]
+  run: { startedAt: number; action: string } | null
+  draining: Promise<void> | null
+  deleting: boolean
 }
 
 type ScopeId = string
 
 const runtimes = new Map<ScopeId, Runtime>()
+const deletedScopes = new Map<ScopeId, number>()
 
 function scopeFor(ctx: Context): ScopeId {
   const chatId = ctx.chat?.id
@@ -74,7 +84,7 @@ function scopeFor(ctx: Context): ScopeId {
 function runtimeFor(scopeId: ScopeId): Runtime {
   let rt = runtimes.get(scopeId)
   if (!rt) {
-    rt = { queue: [], busy: false, abort: null, lastListing: [] }
+    rt = { queue: [], busy: false, abort: null, lastListing: [], run: null, draining: null, deleting: false }
     runtimes.set(scopeId, rt)
   }
   return rt
@@ -278,8 +288,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
   const progress = new Progress(ctx, status.message_id, state.verbose)
   const draft = new DraftStream(ctx)
 
-  const abort = new AbortController()
-  rt.abort = abort
+  const abort = rt.abort!
 
   const since = Date.now()
   const filesNote =
@@ -288,6 +297,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
       : ''
 
   try {
+    if (abort.signal.aborted) return
     const result = await runPrompt({
       prompt: job.prompt + filesNote,
       cwd,
@@ -308,11 +318,14 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
             save()
           }
         } else if (e.type === 'tool') {
+          if (rt.run) rt.run.action = e.label
           draft.resetForTool()
           progress.add(e.label)
         } else if (e.type === 'note') {
+          if (rt.run) rt.run.action = e.text.slice(0, 160)
           progress.add(e.text)
         } else if (e.type === 'partial') {
+          if (rt.run) rt.run.action = 'Готовит ответ'
           draft.setPartial(e.text)
         }
       },
@@ -338,6 +351,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     else if (!abort.signal.aborted) await ctx.reply('(модель не вернула текст)')
     if (!abort.signal.aborted && summary) await ctx.reply(summary)
 
+    if (rt.run) rt.run.action = 'Отправляет файлы'
     await sendArtifacts(ctx, ws, cwd, since, result.text)
   } catch (err) {
     const aborted = abort.signal.aborted || (err instanceof Error && err.name === 'AbortError')
@@ -389,21 +403,33 @@ async function drain(ctx: Context, scopeId: ScopeId): Promise<void> {
   try {
     while (rt.queue.length > 0) {
       const job = rt.queue.shift()!
+      rt.abort = new AbortController()
+      rt.run = { startedAt: Date.now(), action: 'Передаёт запрос Claude' }
       await execute(ctx, scopeId, job)
     }
   } finally {
     rt.busy = false
+    rt.abort = null
+    rt.run = null
+    rt.draining = null
+    const state = getChat(scopeId)
+    state.lastActivityAt = new Date().toISOString()
+    save()
   }
 }
 
-async function enqueue(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> {
-  const rt = runtimeFor(scopeId)
+async function enqueue(ctx: Context, scopeId: ScopeId, job: Job, rt: Runtime): Promise<void> {
+  if (rt.deleting || runtimes.get(scopeId) !== rt) return
+  getChat(scopeId).lastActivityAt = new Date().toISOString()
+  save()
   rt.queue.push(job)
   if (rt.busy) {
     await ctx.reply(`⏳ Занят текущей задачей — поставил в очередь (${rt.queue.length}).`)
     return
   }
-  void drain(ctx, scopeId)
+  rt.draining = drain(ctx, scopeId).catch((error) => {
+    console.error('[queue] выполнение прервано:', error)
+  })
 }
 
 /* ------------------------------------------------------------------ команды */
@@ -431,6 +457,7 @@ async function createTopic(ctx: Context, requestedName: string): Promise<void> {
   const state = getChat(scopeId)
   state.topicName = name
   state.topicNameImplicit = !requested
+  state.lastActivityAt = new Date().toISOString()
   save()
 }
 
@@ -545,14 +572,12 @@ bot.callbackQuery(/^topic_delete:(yes|no)$/, async (ctx) => {
     return
   }
   const scopeId = scopeFor(ctx)
-  const rt = runtimeFor(scopeId)
-  rt.queue.length = 0
-  rt.abort?.abort()
-  archiveWorkspace(scopeId)
-  deleteChat(scopeId)
-  runtimes.delete(scopeId)
   await ctx.answerCallbackQuery('Удаляю тему')
-  await ctx.api.deleteForumTopic(ctx.chat!.id, threadId)
+  try {
+    await deleteTopicAndFiles(scopeId)
+  } catch (error) {
+    await ctx.reply(`Не удалось удалить тему: ${error instanceof Error ? error.message : String(error)}`)
+  }
 })
 
 bot.command('auth_status', async (ctx) => {
@@ -603,11 +628,14 @@ bot.command('auth_code', async (ctx) => {
 
 bot.command('new', async (ctx) => {
   const scopeId = scopeFor(ctx)
-  const state = getChat(scopeId)
-  state.sessionId = null
-  save()
-  resetSessionUsage(scopeId)
-  await ctx.reply('🆕 Начал новую сессию. Прежний контекст забыт.')
+  try {
+    changeSession(getChat(scopeId), null, runtimeFor(scopeId).busy)
+    resetSessionUsage(scopeId)
+    save()
+    await ctx.reply('🆕 Начал новую сессию. Прежний контекст забыт.')
+  } catch (error) {
+    await ctx.reply(error instanceof Error ? error.message : String(error))
+  }
 })
 
 bot.command('usage', async (ctx) => {
@@ -690,25 +718,13 @@ bot.command('pwd', async (ctx) => {
 
 bot.command('cd', async (ctx) => {
   const scopeId = scopeFor(ctx)
-  const state = getChat(scopeId)
-  const arg = ctx.match.trim()
-  const ws = workspaceFor(scopeId)
-
-  if (!arg || arg === '~') {
-    state.cwd = null
+  try {
+    changeDirectory(getChat(scopeId), cwdFor(scopeId), ctx.match, runtimeFor(scopeId).busy)
     save()
-    await ctx.reply(`Вернулся в рабочую папку чата:\n<code>${ws.root}</code>`, { parse_mode: 'HTML' })
-    return
+    await ctx.reply(`Работаю в:\n${cwdFor(scopeId)}`)
+  } catch (error) {
+    await ctx.reply(error instanceof Error ? error.message : String(error))
   }
-
-  const target = path.resolve(cwdFor(scopeId), arg.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
-  if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
-    await ctx.reply(`Нет такой директории:\n<code>${target}</code>`, { parse_mode: 'HTML' })
-    return
-  }
-  state.cwd = target
-  save()
-  await ctx.reply(`Работаю в:\n<code>${target}</code>`, { parse_mode: 'HTML' })
 })
 
 bot.command('model', async (ctx) => {
@@ -743,7 +759,7 @@ bot.command('tldr', async (ctx) => {
     await ctx.reply('Нет активной сессии — сжимать нечего.')
     return
   }
-  await enqueue(ctx, scopeId, { prompt: 'ELI18 TLDR', files: [] })
+  await enqueue(ctx, scopeId, { prompt: 'ELI18 TLDR', files: [] }, runtimeFor(scopeId))
 })
 
 bot.command('sessions', async (ctx) => {
@@ -769,12 +785,13 @@ bot.command('resume', async (ctx) => {
     await ctx.reply('Укажи номер из списка /sessions, например: /resume 2')
     return
   }
-  const switching = state.sessionId !== target.id
-  state.sessionId = target.id
-  if (target.cwd && fs.existsSync(target.cwd)) state.cwd = target.cwd
-  save()
-  if (switching) resetSessionUsage(scopeId)
-  await ctx.reply(`↩️ Вернулся к сессии: ${target.title || target.id.slice(0, 8)}`)
+  try {
+    if (changeSession(state, target.id, runtimeFor(scopeId).busy)) resetSessionUsage(scopeId)
+    save()
+    await ctx.reply(`↩️ Вернулся к сессии: ${target.title || target.id.slice(0, 8)}`)
+  } catch (error) {
+    await ctx.reply(error instanceof Error ? error.message : String(error))
+  }
 })
 
 bot.command('files', async (ctx) => {
@@ -934,10 +951,13 @@ function extractFiles(ctx: Context): IncomingFile[] {
 
 async function handleIncoming(ctx: Context, files: IncomingFile[], text: string): Promise<void> {
   const scopeId = scopeFor(ctx)
+  const rt = runtimeFor(scopeId)
+  if (rt.deleting) return
   const ws = workspaceFor(scopeId)
 
   const downloaded: DownloadedFile[] = []
   for (const f of files) {
+    if (rt.deleting || runtimes.get(scopeId) !== rt) return
     try {
       downloaded.push(await downloadIncoming((id) => ctx.api.getFile(id), f, ws))
     } catch (err) {
@@ -946,6 +966,7 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
     }
   }
 
+  if (rt.deleting || runtimes.get(scopeId) !== rt) return
   const prompt = text.trim() || (downloaded.length > 0 ? 'Посмотри приложенные файлы.' : '')
   if (!prompt) return
 
@@ -965,7 +986,7 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
     await ctx.reply(`📎 Принял ${downloaded.length} файл(ов) → inbox`)
   }
 
-  await enqueue(ctx, scopeId, { prompt, files: downloaded })
+  await enqueue(ctx, scopeId, { prompt, files: downloaded }, rt)
 }
 
 bot.on('message:forum_topic_created', async (ctx) => {
@@ -979,7 +1000,8 @@ bot.on('message:forum_topic_created', async (ctx) => {
 
 bot.on('message:forum_topic_edited', async (ctx) => {
   if (ctx.message.forum_topic_edited.name) {
-    const state = getChat(scopeFor(ctx))
+    const state = listChats().find(([id]) => id === scopeFor(ctx))?.[1]
+    if (!state) return
     state.topicName = ctx.message.forum_topic_edited.name
     state.topicNameImplicit = false
     save()
@@ -1048,12 +1070,10 @@ function ownedScope(userId: number, scopeId: string): ScopeId {
   if (!scopeId.startsWith(`${userId}:`) || !listChats().some(([id]) => id === scopeId)) {
     throw new Error('Тред не найден')
   }
+  if (runtimeFor(scopeId).deleting) throw new Error('Тред удаляется')
   return scopeId
 }
 
-function webFileId(file: string): string {
-  return createHash('sha256').update(file).digest('base64url').slice(0, 24)
-}
 
 type WebStatus = {
   authenticated: boolean
@@ -1062,28 +1082,68 @@ type WebStatus = {
 }
 
 let webStatusCache: WebStatus | null = null
+let webStatusPending: Promise<WebStatus> | null = null
 
 async function getWebStatus(force: boolean): Promise<WebStatus> {
-  if (!force && webStatusCache) return webStatusCache
-  const [authenticated, usage] = await Promise.all([
+  if (!force && webStatusCache && Date.now() - webStatusCache.updatedAt < 60_000) return webStatusCache
+  if (webStatusPending) return !force && webStatusCache ? webStatusCache : webStatusPending
+  webStatusPending = Promise.all([
     authStatus(),
     fetchPlanUsage().catch(() => null),
-  ])
-  webStatusCache = {
-    authenticated,
-    limits: usage?.rows.map((row) => ({ title: row.title, percent: row.percent, resetsAt: row.resetsAt })) ?? [],
-    updatedAt: Date.now(),
+  ]).then(([authenticated, usage]) => {
+    webStatusCache = {
+      authenticated,
+      limits: usage?.rows.map((row) => ({ title: row.title, percent: row.percent, resetsAt: row.resetsAt })) ?? [],
+      updatedAt: Date.now(),
+    }
+    return webStatusCache
+  }).finally(() => { webStatusPending = null })
+  if (!force && webStatusCache) {
+    void webStatusPending.catch(() => {})
+    return webStatusCache
   }
-  return webStatusCache
+  return webStatusPending
 }
 
-function removeTopicState(scopeId: ScopeId): void {
+async function deleteTopicAndFiles(scopeId: ScopeId): Promise<void> {
   const rt = runtimeFor(scopeId)
+  if (rt.deleting) throw new Error('Тред уже удаляется')
+  rt.deleting = true
+  for (const [key, group] of mediaGroups) {
+    if (!key.startsWith(`${scopeId}:`)) continue
+    clearTimeout(group.timer)
+    mediaGroups.delete(key)
+  }
   rt.queue.length = 0
   rt.abort?.abort()
-  archiveWorkspace(scopeId)
-  deleteChat(scopeId)
-  runtimes.delete(scopeId)
+  let timer: NodeJS.Timeout | undefined
+  try {
+    if (rt.draining) {
+      await Promise.race([
+        rt.draining,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Claude ещё останавливается. Повтори удаление позже')), 15_000)
+        }),
+      ])
+    }
+    const [chatId, threadId] = scopeId.split(':').map(Number)
+    if (threadId) {
+      try {
+        await bot.api.deleteForumTopic(chatId!, threadId)
+      } catch (error) {
+        if (!topicIsMissing(error)) throw error
+      }
+    }
+    archiveWorkspace(scopeId)
+    deleteChat(scopeId, { persist: true })
+    runtimes.delete(scopeId)
+    const now = Date.now()
+    for (const [id, expiresAt] of deletedScopes) if (expiresAt <= now) deletedScopes.delete(id)
+    if (threadId) deletedScopes.set(scopeId, now + 10 * 60_000)
+  } finally {
+    clearTimeout(timer)
+    rt.deleting = false
+  }
 }
 
 function topicIsMissing(error: unknown): boolean {
@@ -1106,13 +1166,6 @@ const webServer = startWebServer({
         const rt = runtimeFor(scopeId)
         const current = state.sessions.find((session) => session.id === state.sessionId)
         const cwd = cwdFor(scopeId)
-        const ws = workspaceFor(scopeId)
-        const files = listFiles(ws, cwd).slice(0, 30).map((file) => ({
-          id: webFileId(file.path),
-          name: path.basename(file.path),
-          kind: 'file',
-          meta: `${fmtSize(file.size)} · ${new Date(file.mtime).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}`,
-        }))
         return {
           id: scopeId,
           threadId,
@@ -1125,15 +1178,21 @@ const webServer = startWebServer({
           queued: rt.queue.length,
           sessions: state.sessions,
           sessionId: state.sessionId,
-          files,
+          pinned: state.pinned === true,
+          lastActivityAt: state.lastActivityAt ?? state.sessions[0]?.startedAt ?? null,
+          run: rt.run ? { ...rt.run, stopping: rt.abort?.signal.aborted === true } : null,
         }
       })
-      .sort((a, b) => Number(b.busy) - Number(a.busy) || a.name.localeCompare(b.name, 'ru'))
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.busy) - Number(a.busy)
+        || (Date.parse(b.lastActivityAt ?? '') || 0) - (Date.parse(a.lastActivityAt ?? '') || 0)
+        || a.name.localeCompare(b.name, 'ru'))
     return {
       authenticated: status.authenticated,
       limits: status.limits,
       statusUpdatedAt: status.updatedAt,
       topics,
+      models: MODELS,
+      botUrl: bot.isInited() ? `https://t.me/${bot.botInfo.username}` : null,
     }
   },
   createTopic: async (userId, requestedName) => {
@@ -1144,6 +1203,7 @@ const webServer = startWebServer({
     const state = getChat(scopeId)
     state.topicName = name
     state.topicNameImplicit = false
+    state.lastActivityAt = new Date().toISOString()
     save()
     return { ok: true, scopeId }
   },
@@ -1152,19 +1212,12 @@ const webServer = startWebServer({
     let removed = 0
     let failed = 0
     for (const scopeId of scopes) {
-      const threadId = Number(scopeId.split(':')[1] ?? 0)
-      if (threadId) {
-        try {
-          await bot.api.deleteForumTopic(userId, threadId)
-        } catch (error) {
-          if (!topicIsMissing(error)) {
-            failed += 1
-            continue
-          }
-        }
+      try {
+        await deleteTopicAndFiles(scopeId)
+        removed += 1
+      } catch {
+        failed += 1
       }
-      removeTopicState(scopeId)
-      removed += 1
     }
     return { ok: failed === 0, removed, failed }
   },
@@ -1172,29 +1225,29 @@ const webServer = startWebServer({
     const scopeId = ownedScope(userId, requestedScope)
     const state = getChat(scopeId)
     const threadId = Number(scopeId.split(':')[1] ?? 0)
-    if (typeof patch.name === 'string') {
-      const name = patch.name.replace(/\s+/g, ' ').trim().slice(0, 128)
+    const keys = Object.keys(patch)
+    if (keys.length !== 1) throw new Error('Изменяй один параметр за раз')
+    const key = keys[0]!
+    const value = patch[key]
+    if (key === 'name' && typeof value === 'string') {
+      const name = value.replace(/\s+/g, ' ').trim().slice(0, 128)
       if (!threadId) throw new Error('Основной чат нельзя переименовать')
       if (!name) throw new Error('Название не может быть пустым')
       await bot.api.editForumTopic(userId, threadId, { name })
       state.topicName = name
       state.topicNameImplicit = false
-    }
-    if (typeof patch.cwd === 'string') {
-      const input = patch.cwd.trim()
-      if (!input || input === '~') {
-        state.cwd = null
-      } else {
-        const target = path.resolve(cwdFor(scopeId), input.replace(/^~(?=\/|$)/, process.env.HOME ?? '~'))
-        if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error('Нет такой директории')
-        state.cwd = target
-      }
-    }
-    if (typeof patch.verbose === 'boolean') state.verbose = patch.verbose
-    if (typeof patch.model === 'string' && MODELS.some((model) => model.id === patch.model)) state.model = patch.model
-    if (typeof patch.sessionId === 'string' && state.sessions.some((session) => session.id === patch.sessionId)) {
-      state.sessionId = patch.sessionId
-      resetSessionUsage(scopeId)
+    } else if (key === 'cwd' && typeof value === 'string') {
+      changeDirectory(state, cwdFor(scopeId), value, runtimeFor(scopeId).busy)
+    } else if (key === 'sessionId' && typeof value === 'string') {
+      if (changeSession(state, value, runtimeFor(scopeId).busy)) resetSessionUsage(scopeId)
+    } else if (key === 'verbose' && typeof value === 'boolean') {
+      state.verbose = value
+    } else if (key === 'pinned' && typeof value === 'boolean') {
+      state.pinned = value
+    } else if (key === 'model' && typeof value === 'string' && MODELS.some((model) => model.id === value)) {
+      state.model = value
+    } else {
+      throw new Error('Неизвестный параметр или недопустимое значение')
     }
     save()
     return { ok: true }
@@ -1203,12 +1256,7 @@ const webServer = startWebServer({
     const scopeId = ownedScope(userId, requestedScope)
     const threadId = Number(scopeId.split(':')[1] ?? 0)
     if (!threadId) throw new Error('Основной чат нельзя удалить')
-    try {
-      await bot.api.deleteForumTopic(userId, threadId)
-    } catch (error) {
-      if (!topicIsMissing(error)) throw error
-    }
-    removeTopicState(scopeId)
+    await deleteTopicAndFiles(scopeId)
     return { ok: true }
   },
   stopTopic: async (userId, requestedScope) => {
@@ -1219,17 +1267,22 @@ const webServer = startWebServer({
   },
   newSession: async (userId, requestedScope) => {
     const scopeId = ownedScope(userId, requestedScope)
-    getChat(scopeId).sessionId = null
+    changeSession(getChat(scopeId), null, runtimeFor(scopeId).busy)
     resetSessionUsage(scopeId)
     save()
     return { ok: true }
   },
   getFile: async (userId, requestedScope, requestedFile) => {
     const scopeId = ownedScope(userId, requestedScope)
-    const files = listFiles(workspaceFor(scopeId), cwdFor(scopeId))
-    const file = files.find((candidate) => webFileId(candidate.path) === requestedFile)
-    if (!file || !fs.existsSync(file.path) || !fs.statSync(file.path).isFile()) throw new Error('Файл не найден')
-    return { path: file.path, name: path.basename(file.path) }
+    return resolveFile({ workspace: workspaceFor(scopeId), cwd: cwdFor(scopeId) }, requestedFile)
+  },
+  listFiles: async (userId, requestedScope, root, relative, offset) => {
+    const scopeId = ownedScope(userId, requestedScope)
+    return browseFiles({ workspace: workspaceFor(scopeId), cwd: cwdFor(scopeId) }, root, relative, offset)
+  },
+  uploadFile: async (userId, requestedScope, name, data) => {
+    const scopeId = ownedScope(userId, requestedScope)
+    return uploadFile({ workspace: workspaceFor(scopeId), cwd: cwdFor(scopeId) }, name, data)
   },
 })
 

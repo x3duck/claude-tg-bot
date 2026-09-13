@@ -4,3 +4,4 @@ data/
 workspaces/
 *.log
 .claude/settings.local.json
+AGENTS.local.md

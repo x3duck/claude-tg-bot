@@ -24,6 +24,8 @@ export type ChatState = {
   verbose: boolean
   topicName?: string
   topicNameImplicit?: boolean
+  pinned?: boolean
+  lastActivityAt?: string
   sessionId: string | null
   sessions: SessionRecord[]
   usage: { session: UsageTotals; total: UsageTotals }
@@ -66,7 +68,7 @@ export function save(): void {
   }, 300)
 }
 
-export function saveNow(): void {
+export function saveNow(options: { throwOnError?: boolean } = {}): void {
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null
@@ -75,6 +77,7 @@ export function saveNow(): void {
     flush()
   } catch (err) {
     console.error('[state] не удалось сохранить состояние:', err)
+    if (options.throwOnError) throw err
   }
 }
 
@@ -141,9 +144,21 @@ export function rememberSession(scopeId: string | number, session: SessionRecord
   save()
 }
 
-export function deleteChat(scopeId: string | number): void {
-  delete store[String(scopeId)]
-  save()
+export function deleteChat(scopeId: string | number, options: { persist?: boolean } = {}): void {
+  const key = String(scopeId)
+  const previous = store[key]
+  delete store[key]
+  if (!options.persist) {
+    save()
+    return
+  }
+  try {
+    saveNow({ throwOnError: true })
+  } catch {
+    if (previous) store[key] = previous
+    save()
+    throw new Error('Не удалось сохранить удаление треда. Повтори удаление')
+  }
 }
 
 export function listChats(): [string, ChatState][] {
