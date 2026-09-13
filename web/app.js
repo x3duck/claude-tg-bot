@@ -62,6 +62,7 @@ const state = {
   lastSuccessAt: null,
   stale: false,
   submitting: new Set(),
+  newSessionPending: null,
   files: { topicId: null, root: 'workspace', path: '', entries: [], nextOffset: null, pagesLoaded: 0, loading: false, request: 0, error: null, uploadNotice: null, returnView: null },
   preview: { file: null, topicId: null, url: null, pdfViewer: null, request: 0 },
 }
@@ -234,12 +235,11 @@ function renderDetail() {
   $('#verbose-toggle').checked = topic.verbose
   $('#verbose-toggle').disabled = isBusy('verbose')
   $('#model-row').disabled = isBusy('model')
-  $('#new-session').disabled = topic.busy || !topic.sessionId || isBusy('new-session')
-  $('#new-session').textContent = topic.sessionId ? '＋ Начать новую сессию' : 'Первое сообщение начнёт сессию'
+  $('#new-session').disabled = topic.busy || isBusy('new-session')
+  $('#new-session').classList.toggle('hidden', !topic.sessionId)
   $('#advanced-row').disabled = topic.busy || isBusy('cwd')
-  const newSessionReady = !topic.busy && !topic.sessionId
+  const newSessionReady = state.newSessionPending === topic.id && !topic.busy && !topic.sessionId
   $('#new-session-ready').classList.toggle('hidden', !newSessionReady)
-  $('#new-session-title').textContent = topic.sessions.length ? 'Сессия начнётся с первого сообщения' : 'Сессия ещё не начата'
   $('#open-topic-chat').disabled = !state.data?.botUrl
   $('#pin-topic').textContent = topic.pinned ? 'Открепить' : 'Закрепить'
   $('#rename-topic').classList.toggle('hidden', topic.threadId === 0)
@@ -707,7 +707,7 @@ $('#model-row').addEventListener('click', () => {
   syncBackButton()
 })
 $('#verbose-toggle').addEventListener('change', async (event) => { const value = event.target.checked; const result = await patchTopic('verbose', { verbose: value }, null); if (!result) event.target.checked = !value })
-$('#new-session').addEventListener('click', async () => { const topic = selectedTopic(); if (!topic || topic.busy) return; const targetId = topic.id; await mutate('new-session', () => demoMode ? Promise.resolve(true) : apiJson(`/api/topics/${encodeURIComponent(targetId)}/new-session`, { method: 'POST', body: '{}' }), 'Новый контекст включён') })
+$('#new-session').addEventListener('click', async () => { const topic = selectedTopic(); if (!topic || topic.busy) return; const targetId = topic.id; const result = await mutate('new-session', () => demoMode ? Promise.resolve(true) : apiJson(`/api/topics/${encodeURIComponent(targetId)}/new-session`, { method: 'POST', body: '{}' })); if (result) { state.newSessionPending = targetId; renderAll() } })
 $('#open-topic-chat').addEventListener('click', () => {
   const topic = selectedTopic()
   const botUrl = state.data?.botUrl
