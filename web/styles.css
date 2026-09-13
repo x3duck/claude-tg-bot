@@ -2,9 +2,9 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: radial-gradient(circle at 50% -20%, color-mix(in srgb, var(--blue) 8%, transparent), transparent 48%), var(--bg); color: var(--text); }
 body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
-button, input, select { font: inherit; }
-button, select { color: inherit; cursor: pointer; }
-button:disabled, input:disabled, select:disabled { cursor: default; opacity: .48; }
+button, input { font: inherit; }
+button { color: inherit; cursor: pointer; }
+button:disabled, input:disabled { cursor: default; opacity: .48; }
 .hidden { display: none !important; }
 .app-shell { width: min(100%, 680px); min-height: 100vh; margin: 0 auto; padding: max(24px, calc(env(safe-area-inset-top) + 14px)) 16px calc(100px + env(safe-area-inset-bottom)); }
 .view { display: none; animation: appear 160ms ease-out; }
@@ -31,8 +31,8 @@ button:disabled, input:disabled, select:disabled { cursor: default; opacity: .48
 .thread-section { margin-top: 25px; }
 .thread-section .section-heading { margin-top: 0; }
 .list-card:empty::after { content: "Пока пусто"; display: block; padding: 24px; color: var(--muted); text-align: center; }
-.thread-row, .session-row, .file-row, .command-row, .setting-row, .wide-row, .action-row, .model-option { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
-.thread-row:last-child, .session-row:last-child, .file-row:last-child, .command-row:last-child, .setting-row:last-child, .action-row:last-child, .model-option:last-child { border-bottom: 0; }
+.thread-row, .session-row, .file-row, .command-row, .setting-row, .wide-row, .action-row, .model-option, .topic-option { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
+.thread-row:last-child, .session-row:last-child, .file-row:last-child, .command-row:last-child, .setting-row:last-child, .action-row:last-child, .model-option:last-child, .topic-option:last-child { border-bottom: 0; }
 .thread-row { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; min-height: 72px; gap: 11px; padding: 10px 14px; }
 .thread-icon, .file-icon { display: grid; place-items: center; width: 36px; height: 36px; color: #bcd0e3; font-size: 22px; }
 .row-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -72,8 +72,10 @@ input[role="switch"]:checked::after { transform: translateX(18px); }
 .session-ready strong { font-size: 14px; }
 .session-ready small { color: var(--muted); font-size: 12px; line-height: 1.35; }
 .session-ready .small-button { white-space: nowrap; }
-.select-card { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 0 14px; }
-.select-card select { min-width: 0; height: 58px; border: 0; outline: 0; background: transparent; font-size: 16px; font-weight: 650; appearance: none; }
+.topic-picker { width: 100%; min-height: 64px; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 14px; text-align: left; }
+.topic-picker:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.topic-picker .row-copy { flex-direction: column-reverse; }
+.topic-picker .row-copy strong { font-size: 16px; }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 14px 0; padding: 3px; border-radius: 12px; background: var(--surface); }
 .segmented button { min-height: 38px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 13px; }
 .segmented button.active { background: var(--surface-2); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,.16); }
@@ -124,6 +126,18 @@ dialog::backdrop { background: rgba(0, 0, 0, .56); backdrop-filter: blur(2px); }
 .field-label input:focus { border-color: var(--blue); }
 .action-row, .model-option { min-height: 54px; padding: 12px 6px; font-size: 16px; }
 .model-option { display: flex; justify-content: space-between; }
+.topic-picker-sheet[open] { max-height: min(82dvh, 720px); display: grid; grid-template-rows: auto auto auto auto minmax(96px, 1fr); overflow: hidden; }
+.topic-picker-search { flex: none; background: var(--bg); }
+.picker-count { min-height: 30px; padding: 10px 3px 5px; color: var(--muted); font-size: 12px; }
+.topic-picker-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--bg) 40%, transparent); scrollbar-width: thin; }
+.topic-picker-group + .topic-picker-group { border-top: 8px solid var(--surface); }
+.topic-picker-group h3 { position: sticky; z-index: 1; top: 0; margin: 0; padding: 9px 14px 7px; background: color-mix(in srgb, var(--surface) 96%, transparent); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.topic-option { min-height: 62px; display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px 13px; }
+.topic-option[aria-checked="true"] { background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.topic-choice-mark { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; color: transparent; font-size: 14px; font-weight: 800; }
+.topic-option[aria-checked="true"] .topic-choice-mark { border-color: var(--blue); background: var(--blue); color: var(--button-text); }
+.topic-option .row-copy strong { font-size: 15px; }
+.topic-option-empty { padding: 32px 18px; color: var(--muted); text-align: center; font-size: 14px; }
 .dialog-copy { margin: 0 0 18px; color: var(--muted); line-height: 1.45; }
 .preview-dialog { width: min(100%, 680px); max-width: none; height: 100dvh; max-height: none; margin: 0 auto; border: 0; background: var(--bg); padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
 .preview-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }

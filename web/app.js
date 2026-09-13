@@ -267,16 +267,51 @@ function renderSettings() {
 
 function renderFilesHeader() {
   const topics = state.data?.topics || []
-  const select = $('#files-topic')
-  const focused = document.activeElement === select
-  const options = topics.map((topic) => `<option value="${escapeHtml(topic.id)}" ${topic.id === state.files.topicId ? 'selected' : ''}>${escapeHtml(topic.name)}</option>`).join('')
-  if (!focused && select.innerHTML !== options) select.innerHTML = options || '<option value="">Нет тредов</option>'
-  select.disabled = !topics.length
   const topic = topics.find((item) => item.id === state.files.topicId)
   $('#files-subtitle').textContent = topic?.name || 'Нет выбранного треда'
+  $('#files-topic-name').textContent = topic?.name || 'Нет доступных тредов'
+  $('#files-topic-picker').disabled = !topics.length
   $('#upload-button').disabled = !topic || state.files.loading || isBusy('upload')
   $$('[data-root]').forEach((button) => button.classList.toggle('active', button.dataset.root === state.files.root))
   renderBreadcrumbs()
+}
+
+function openFilesTopicDialog() {
+  if (!state.data?.topics.length) return
+  $('#files-topic-search').value = ''
+  renderFilesTopicOptions()
+  $('#files-topic-dialog').showModal()
+  $('#files-topic-picker').setAttribute('aria-expanded', 'true')
+  syncBackButton()
+  setTimeout(() => {
+    $('#files-topic-search').focus()
+    $('[data-files-topic-option][aria-checked="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, 80)
+}
+
+function renderFilesTopicOptions() {
+  const topics = [...(state.data?.topics || [])].sort((a, b) => new Date(b.lastActivityAt || 0) - new Date(a.lastActivityAt || 0))
+  const query = $('#files-topic-search').value.trim().toLocaleLowerCase('ru')
+  const filtered = topics.filter((topic) => topic.name.toLocaleLowerCase('ru').includes(query))
+  $('#files-topic-count').textContent = query ? `Найдено ${filtered.length} из ${topics.length}` : `Всего тредов: ${topics.length}`
+  const groups = [
+    ['Закреплённые', filtered.filter((topic) => topic.pinned)],
+    ['Недавние', filtered.filter((topic) => !topic.pinned)],
+  ].filter(([, items]) => items.length)
+  $('#files-topic-options').innerHTML = groups.length
+    ? groups.map(([title, items]) => `<section class="topic-picker-group"><h3>${title}</h3>${items.map(filesTopicMarkup).join('')}</section>`).join('')
+    : '<div class="topic-option-empty">Треды не найдены</div>'
+  $$('[data-files-topic-option]').forEach((button) => button.addEventListener('click', () => {
+    const id = button.dataset.filesTopicOption
+    $('#files-topic-dialog').close()
+    if (id !== state.files.topicId) chooseTopic(id)
+  }))
+}
+
+function filesTopicMarkup(topic) {
+  const subtitle = topic.threadId === 0 ? 'Основной чат' : topic.busy ? 'Claude работает' : topic.lastActivityAt ? `Активность ${relativeTime(topic.lastActivityAt)}` : 'Нет активной сессии'
+  const selected = topic.id === state.files.topicId
+  return `<button class="topic-option" type="button" role="radio" data-files-topic-option="${escapeHtml(topic.id)}" aria-checked="${selected}"><span class="topic-choice-mark">✓</span><span class="row-copy"><strong>${escapeHtml(topic.name)}</strong><small>${escapeHtml(subtitle)}</small></span></button>`
 }
 
 function renderBreadcrumbs() {
@@ -719,7 +754,8 @@ $('#open-topic-chat').addEventListener('click', () => {
 $('#advanced-row').addEventListener('click', () => { const topic = selectedTopic(); if (!topic || topic.busy) return; $('#cwd-dialog').dataset.topicId = topic.id; $('#cwd-input').value = topic.cwd; $('#cwd-dialog').showModal(); syncBackButton(); setTimeout(() => $('#cwd-input').focus(), 80) })
 $('#cwd-form').addEventListener('submit', async (event) => { event.preventDefault(); const cwd = $('#cwd-input').value.trim(); const targetId = $('#cwd-dialog').dataset.topicId; if (!cwd || !requireTopic(targetId, $('#cwd-dialog'))) return; const result = await patchTopic('cwd', { cwd }, 'Директория изменена', targetId); if (result) $('#cwd-dialog').close() })
 $('#thread-files').addEventListener('click', () => navigate('files', { topicId: state.selectedId }))
-$('#files-topic').addEventListener('change', (event) => chooseTopic(event.target.value))
+$('#files-topic-picker').addEventListener('click', openFilesTopicDialog)
+$('#files-topic-search').addEventListener('input', renderFilesTopicOptions)
 $$('[data-root]').forEach((button) => button.addEventListener('click', () => { if (state.files.root === button.dataset.root) return; state.files.root = button.dataset.root; state.files.path = ''; loadFiles() }))
 $('#load-more-files').addEventListener('click', () => loadFiles({ append: true }))
 $('#refresh-files').addEventListener('click', () => loadFiles())
@@ -731,6 +767,7 @@ $('#refresh-auth').addEventListener('click', () => loadOverview({ refreshStatus:
 $('#commands-toggle').addEventListener('click', () => $('#commands-list').classList.toggle('hidden'))
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadOverview({ silent: true }); if (state.view === 'files' && state.files.pagesLoaded <= 1) loadFiles() } })
 window.addEventListener('beforeunload', revokePreviewUrl)
+$('#files-topic-dialog').addEventListener('close', () => $('#files-topic-picker').setAttribute('aria-expanded', 'false'))
 
 renderCommands()
 if (demoMode) $('#demo-badge').classList.remove('hidden')
