@@ -339,7 +339,7 @@ function renderSettings() {
   $('#auth-dot').className = `status-dot ${ok === true ? 'active' : ''}`
   $('#auth-state').textContent = ok === null ? 'Статус недоступен' : ok ? 'Claude подключён' : 'Требуется вход в Claude'
   $('#auth-checked').textContent = state.data.statusUpdatedAt ? `Проверено ${relativeTime(state.data.statusUpdatedAt)}` : 'Статус ещё не получен'
-  updateHtml($('#limits'), state.data.limits.map((limit) => `<div class="limit"><div class="limit-head"><span>${escapeHtml(limit.title)}</span><span>${Math.round(limit.percent)}%${limit.resetsAt ? ` · сброс ${escapeHtml(formatReset(limit.resetsAt))}` : ''}</span></div><div class="progress"><span style="width:${clamp(limit.percent)}%"></span></div></div>`).join('') || '<p class="quiet-note">Лимиты недоступны</p>')
+  updateHtml($('#limits'), state.data.limits.map((limit, index) => `<div class="limit" data-key="limit-${index}"><div class="limit-head"><span>${escapeHtml(limit.title)}</span><span>${Math.round(limit.percent)}%${limit.resetsAt ? ` · сброс ${escapeHtml(formatReset(limit.resetsAt))}` : ''}</span></div><div class="progress"><span style="width:${clamp(limit.percent)}%"></span></div></div>`).join('') || '<p class="quiet-note">Лимиты недоступны</p>')
   $('#last-update').textContent = state.lastSuccessAt ? relativeTime(state.lastSuccessAt) : '—'
   $('#refresh-auth').disabled = state.overviewLoading
 }
