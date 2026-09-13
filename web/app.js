@@ -73,11 +73,73 @@ const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="/icons.svg#${name}" /></svg>`
 const renderedHtml = new WeakMap()
+const nodeKey = (node) => node.nodeType === Node.ELEMENT_NODE
+  ? ['key', 'topic', 'session', 'file', 'filesTopicOption', 'crumb', 'model'].map((key) => node.dataset[key]).find((value) => value !== undefined) ?? null
+  : null
+
+function sameNodeType(current, next) {
+  if (current.nodeType !== next.nodeType) return false
+  if (current.nodeType !== Node.ELEMENT_NODE) return true
+  const currentKey = nodeKey(current)
+  const nextKey = nodeKey(next)
+  return current.localName === next.localName && current.namespaceURI === next.namespaceURI && currentKey === nextKey
+}
+
+function patchNode(current, next) {
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.data === next.data) return false
+    current.data = next.data
+    return true
+  }
+  let changed = false
+  for (const attribute of [...current.attributes]) {
+    if (!next.hasAttribute(attribute.name)) {
+      current.removeAttribute(attribute.name)
+      changed = true
+    }
+  }
+  for (const attribute of [...next.attributes]) {
+    if (current.getAttribute(attribute.name) !== attribute.value) {
+      current.setAttribute(attribute.name, attribute.value)
+      changed = true
+    }
+  }
+  return patchChildren(current, next) || changed
+}
+
+function patchChildren(current, next) {
+  let changed = false
+  let cursor = current.firstChild
+  for (const desired of [...next.childNodes]) {
+    let match = cursor
+    if (!match || !sameNodeType(match, desired)) {
+      match = [...current.childNodes].find((candidate) => candidate !== cursor && sameNodeType(candidate, desired)) || null
+      if (match) current.insertBefore(match, cursor)
+      else {
+        match = desired.cloneNode(true)
+        current.insertBefore(match, cursor)
+      }
+      changed = true
+    }
+    changed = patchNode(match, desired) || changed
+    cursor = match.nextSibling
+  }
+  while (cursor) {
+    const nextSibling = cursor.nextSibling
+    cursor.remove()
+    cursor = nextSibling
+    changed = true
+  }
+  return changed
+}
+
 function updateHtml(element, markup) {
   if (renderedHtml.get(element) === markup) return false
-  element.innerHTML = markup
+  const template = document.createElement('template')
+  template.innerHTML = markup
+  const changed = patchChildren(element, template.content)
   renderedHtml.set(element, markup)
-  return true
+  return changed
 }
 const topicById = (id) => state.data?.topics.find((topic) => topic.id === id) || null
 const selectedTopic = () => topicById(state.selectedId)
@@ -134,6 +196,8 @@ function navigate(view, options = {}) {
     else if (!state.files.topicId) chooseTopic(state.selectedId || state.data?.topics[0]?.id)
     else renderFilesHeader()
   }
+  if (view === 'threads') renderThreads()
+  if (view === 'settings') renderSettings()
   if (view === 'detail') renderDetail()
   syncBackButton()
   tg?.HapticFeedback?.selectionChanged()
@@ -197,10 +261,10 @@ function renderAll() {
     updateFreshness()
     return
   }
-  renderThreads()
-  renderSettings()
-  renderFilesHeader()
-  if (state.view === 'detail') renderDetail()
+  if (state.view === 'threads') renderThreads()
+  else if (state.view === 'settings') renderSettings()
+  else if (state.view === 'files') renderFilesHeader()
+  else if (state.view === 'detail') renderDetail()
 }
 
 function renderThreads() {
@@ -218,12 +282,8 @@ function renderThreads() {
   $('#pinned-section').classList.toggle('hidden', pinned.length === 0)
   const pinnedList = $('#pinned-list')
   const threadsList = $('#threads-list')
-  if (updateHtml(pinnedList, pinned.map(threadMarkup).join(''))) {
-    pinnedList.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => openTopic(button.dataset.topic)))
-  }
-  if (updateHtml(threadsList, recent.map(threadMarkup).join(''))) {
-    threadsList.querySelectorAll('[data-topic]').forEach((button) => button.addEventListener('click', () => openTopic(button.dataset.topic)))
-  }
+  updateHtml(pinnedList, pinned.map(threadMarkup).join(''))
+  updateHtml(threadsList, recent.map(threadMarkup).join(''))
   $('#thread-count').textContent = query ? `${filtered.length} из ${all.length}` : String(all.length)
   $('#delete-all-count').textContent = all.length ? `${all.length} ›` : '0'
   $('#delete-all-topics').disabled = all.length === 0
@@ -261,13 +321,10 @@ function renderDetail() {
   $('#delete-topic').classList.toggle('hidden', topic.threadId === 0)
   const runCard = $('#run-card')
   runCard.classList.toggle('hidden', !topic.busy && !topic.run)
-  runCard.innerHTML = topic.busy || topic.run ? `<div class="run-head"><span class="status-dot active"></span><div><strong>${topic.run?.stopping ? 'Останавливаем…' : 'Claude работает'}</strong><small>${escapeHtml(topic.run?.action || 'Выполняет текущую задачу')}</small></div></div><div class="run-meta"><span>${formatElapsed(topic.run?.startedAt)}</span><span>В очереди: ${Number(topic.queued) || 0}</span><button id="stop-run" class="stop-button" ${topic.run?.stopping || isBusy('stop') ? 'disabled' : ''}>${topic.run?.stopping ? 'Остановка…' : 'Остановить'}</button></div>` : ''
-  $('#stop-run')?.addEventListener('click', stopRun)
+  updateHtml(runCard, topic.busy || topic.run ? `<div class="run-head" data-key="head"><span class="status-dot active"></span><div><strong>${topic.run?.stopping ? 'Останавливаем…' : 'Claude работает'}</strong><small>${escapeHtml(topic.run?.action || 'Выполняет текущую задачу')}</small></div></div><div class="run-meta" data-key="meta"><span data-key="elapsed" data-run-elapsed>${formatElapsed(topic.run?.startedAt)}</span><span data-key="queue">В очереди: ${Number(topic.queued) || 0}</span><button id="stop-run" class="stop-button" data-key="stop" ${topic.run?.stopping || isBusy('stop') ? 'disabled' : ''}>${topic.run?.stopping ? 'Остановка…' : 'Остановить'}</button></div>` : '')
   const sessionsList = $('#sessions-list')
   const sessionsMarkup = topic.sessions.map((session, index) => `<button class="session-row" data-session="${escapeHtml(session.id)}" ${topic.busy || isBusy('session') ? 'disabled' : ''}><span class="session-icon">${icon('terminal')}<span class="status-dot ${session.id === topic.sessionId ? 'current' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(session.title || `Сессия ${index + 1}`)}</strong><small>${escapeHtml(formatDate(session.startedAt))}</small></span>${session.id === topic.sessionId ? '<span class="current-badge">Текущая</span>' : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`).join('')
-  if (updateHtml(sessionsList, sessionsMarkup)) {
-    sessionsList.querySelectorAll('[data-session]').forEach((button) => button.addEventListener('click', () => selectSession(button.dataset.session)))
-  }
+  updateHtml(sessionsList, sessionsMarkup)
 }
 
 function renderSettings() {
@@ -278,7 +335,7 @@ function renderSettings() {
   $('#auth-dot').className = `status-dot ${ok === true ? 'active' : ''}`
   $('#auth-state').textContent = ok === null ? 'Статус недоступен' : ok ? 'Claude подключён' : 'Требуется вход в Claude'
   $('#auth-checked').textContent = state.data.statusUpdatedAt ? `Проверено ${relativeTime(state.data.statusUpdatedAt)}` : 'Статус ещё не получен'
-  $('#limits').innerHTML = state.data.limits.map((limit) => `<div class="limit"><div class="limit-head"><span>${escapeHtml(limit.title)}</span><span>${Math.round(limit.percent)}%${limit.resetsAt ? ` · сброс ${escapeHtml(formatReset(limit.resetsAt))}` : ''}</span></div><div class="progress"><span style="width:${clamp(limit.percent)}%"></span></div></div>`).join('') || '<p class="quiet-note">Лимиты недоступны</p>'
+  updateHtml($('#limits'), state.data.limits.map((limit) => `<div class="limit"><div class="limit-head"><span>${escapeHtml(limit.title)}</span><span>${Math.round(limit.percent)}%${limit.resetsAt ? ` · сброс ${escapeHtml(formatReset(limit.resetsAt))}` : ''}</span></div><div class="progress"><span style="width:${clamp(limit.percent)}%"></span></div></div>`).join('') || '<p class="quiet-note">Лимиты недоступны</p>')
   $('#last-update').textContent = state.lastSuccessAt ? relativeTime(state.lastSuccessAt) : '—'
   $('#refresh-auth').disabled = state.overviewLoading
 }
@@ -316,14 +373,9 @@ function renderFilesTopicOptions() {
     ['Закреплённые', filtered.filter((topic) => topic.pinned)],
     ['Недавние', filtered.filter((topic) => !topic.pinned)],
   ].filter(([, items]) => items.length)
-  $('#files-topic-options').innerHTML = groups.length
+  updateHtml($('#files-topic-options'), groups.length
     ? groups.map(([title, items]) => `<section class="topic-picker-group"><h3>${title}</h3>${items.map(filesTopicMarkup).join('')}</section>`).join('')
-    : '<div class="topic-option-empty">Треды не найдены</div>'
-  $$('[data-files-topic-option]').forEach((button) => button.addEventListener('click', () => {
-    const id = button.dataset.filesTopicOption
-    $('#files-topic-dialog').close()
-    if (id !== state.files.topicId) chooseTopic(id)
-  }))
+    : '<div class="topic-option-empty">Треды не найдены</div>')
 }
 
 function filesTopicMarkup(topic) {
@@ -335,12 +387,7 @@ function filesTopicMarkup(topic) {
 function renderBreadcrumbs() {
   const parts = state.files.path ? state.files.path.split('/') : []
   const labels = [state.files.root === 'workspace' ? 'Папка треда' : 'Рабочая папка', ...parts]
-  $('#breadcrumbs').innerHTML = labels.map((label, index) => `<button data-crumb="${index}">${escapeHtml(label)}</button>`).join('')
-  $$('[data-crumb]').forEach((button) => button.addEventListener('click', () => {
-    state.files.path = parts.slice(0, Number(button.dataset.crumb)).join('/')
-    loadFiles()
-    syncBackButton()
-  }))
+  updateHtml($('#breadcrumbs'), labels.map((label, index) => `<button data-crumb="${index}">${escapeHtml(label)}</button>`).join(''))
 }
 
 function renderFiles() {
@@ -357,14 +404,13 @@ function renderFiles() {
   const list = $('#files-list')
   list.classList.toggle('loading', state.files.loading && !state.files.entries.length)
   list.setAttribute('aria-busy', String(state.files.loading))
-  list.innerHTML = state.files.loadingVisible && !state.files.entries.length
+  updateHtml(list, state.files.loadingVisible && !state.files.entries.length
     ? Array.from({ length: 3 }, () => '<div class="file-skeleton" aria-hidden="true"><span></span><div><i></i><i></i></div></div>').join('')
-    : state.files.entries.map((entry) => `<button class="file-row" data-file="${escapeHtml(entry.id)}"><span class="file-icon ${entry.kind === 'directory' ? 'directory-icon' : ''}">${entry.kind === 'directory' ? icon('folder') : fileIcon(entry)}</span><span class="row-copy"><strong>${escapeHtml(entry.name)}</strong><small>${entry.kind === 'directory' ? 'Папка' : `${formatBytes(entry.size)} · ${formatDate(entry.mtime)}`}</small></span><span class="chevron">${icon('chevron-right')}</span></button>`).join('')
+    : state.files.entries.map((entry) => `<button class="file-row" data-file="${escapeHtml(entry.id)}"><span class="file-icon ${entry.kind === 'directory' ? 'directory-icon' : ''}">${entry.kind === 'directory' ? icon('folder') : fileIcon(entry)}</span><span class="row-copy"><strong>${escapeHtml(entry.name)}</strong><small>${entry.kind === 'directory' ? 'Папка' : `${formatBytes(entry.size)} · ${formatDate(entry.mtime)}`}</small></span><span class="chevron">${icon('chevron-right')}</span></button>`).join(''))
   $('#load-more-files').classList.toggle('hidden', state.files.nextOffset === null)
   $('#load-more-files').disabled = state.files.loading
   $('#refresh-files').classList.toggle('hidden', state.files.pagesLoaded <= 1)
   $('#refresh-files').disabled = state.files.loading
-  $$('[data-file]').forEach((button) => button.addEventListener('click', () => openFile(button.dataset.file)))
 }
 
 async function loadOverview(options = {}) {
@@ -751,7 +797,24 @@ function formatElapsed(value) { const started = Number(value); if (!started) ret
 function formatDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }
 function formatReset(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }
 function fileIcon(file) { return file.preview === 'image' ? icon('file-image') : file.preview === 'text' || file.preview === 'markdown' ? icon('file-text') : icon('file') }
-function updateFreshness() { const text = state.lastSuccessAt ? relativeTime(state.lastSuccessAt) : null; $('#sync-state').textContent = state.stale ? `Данные устарели · ${text}` : text ? `Обновлено ${text}` : state.overviewError ? 'Не удалось обновить' : 'Загрузка…'; if (state.data) renderSettings() }
+function updateFreshness() { const text = state.lastSuccessAt ? relativeTime(state.lastSuccessAt) : null; $('#sync-state').textContent = state.stale ? `Данные устарели · ${text}` : text ? `Обновлено ${text}` : state.overviewError ? 'Не удалось обновить' : 'Загрузка…' }
+function updateClock() {
+  updateFreshness()
+  if (!state.data || document.querySelector('dialog[open]')) return
+  if (state.view === 'threads') renderThreads()
+  else if (state.view === 'settings') renderSettings()
+  else if (state.view === 'detail') {
+    const elapsed = $('[data-run-elapsed]')
+    if (elapsed) elapsed.textContent = formatElapsed(selectedTopic()?.run?.startedAt)
+  }
+}
+
+function delegate(container, selector, handler) {
+  container.addEventListener('click', (event) => {
+    const target = event.target.closest(selector)
+    if (target && container.contains(target)) handler(target)
+  })
+}
 
 $$('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)))
 $$('[data-close]').forEach((button) => button.addEventListener('click', () => { $(`#${button.dataset.close}`).close(); renderAll(); syncBackButton() }))
@@ -759,6 +822,10 @@ $$('dialog').forEach((dialog) => dialog.addEventListener('close', () => { render
 $$('[data-back]').forEach((button) => button.addEventListener('click', goBack))
 tg?.BackButton?.onClick(handleNativeBack)
 $('#thread-search').addEventListener('input', renderThreads)
+delegate($('#pinned-list'), '[data-topic]', (button) => openTopic(button.dataset.topic))
+delegate($('#threads-list'), '[data-topic]', (button) => openTopic(button.dataset.topic))
+delegate($('#sessions-list'), '[data-session]', (button) => selectSession(button.dataset.session))
+delegate($('#run-card'), '#stop-run', () => stopRun())
 $('#create-topic').addEventListener('click', () => openTopicDialog('create'))
 $('#topic-form').addEventListener('submit', createOrRenameTopic)
 $('#topic-menu').addEventListener('click', () => { $('#topic-actions').dataset.topicId = state.selectedId || ''; $('#topic-actions').showModal(); syncBackButton() })
@@ -792,6 +859,18 @@ $('#cwd-form').addEventListener('submit', async (event) => { event.preventDefaul
 $('#thread-files').addEventListener('click', () => navigate('files', { topicId: state.selectedId }))
 $('#files-topic-picker').addEventListener('click', openFilesTopicDialog)
 $('#files-topic-search').addEventListener('input', renderFilesTopicOptions)
+delegate($('#files-topic-options'), '[data-files-topic-option]', (button) => {
+  const id = button.dataset.filesTopicOption
+  $('#files-topic-dialog').close()
+  if (id !== state.files.topicId) chooseTopic(id)
+})
+delegate($('#breadcrumbs'), '[data-crumb]', (button) => {
+  const parts = state.files.path ? state.files.path.split('/') : []
+  state.files.path = parts.slice(0, Number(button.dataset.crumb)).join('/')
+  loadFiles()
+  syncBackButton()
+})
+delegate($('#files-list'), '[data-file]', (button) => openFile(button.dataset.file))
 $$('[data-root]').forEach((button) => button.addEventListener('click', () => { if (state.files.root === button.dataset.root) return; state.files.root = button.dataset.root; state.files.path = ''; loadFiles() }))
 $('#load-more-files').addEventListener('click', () => loadFiles({ append: true }))
 $('#refresh-files').addEventListener('click', () => loadFiles())
@@ -817,4 +896,4 @@ if (demoMode) $('#demo-badge').classList.remove('hidden')
 renderThreads()
 loadOverview()
 setInterval(() => { if (!document.hidden) { updateFreshness(); loadOverview({ silent: true }); if (state.view === 'files' && state.files.pagesLoaded <= 1) loadFiles({ silent: true }) } }, 4000)
-setInterval(() => { if (!document.hidden && state.view === 'detail' && !document.querySelector('dialog[open]')) renderDetail(); else updateFreshness() }, 1000)
+setInterval(() => { if (!document.hidden) updateClock() }, 1000)
