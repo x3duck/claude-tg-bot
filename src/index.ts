@@ -480,6 +480,18 @@ bot.command('help', async (ctx) => {
 
 bot.command('new_topic', async (ctx) => {
   try {
+    const threadId = ctx.msg?.message_thread_id
+    const state = getChat(scopeFor(ctx))
+    if (threadId && state.topicNameImplicit) {
+      const requested = ctx.match.replace(/\s+/g, ' ').trim().slice(0, 128)
+      const name = requested || 'Новая задача'
+      await ctx.api.editForumTopic(ctx.chat!.id, threadId, { name })
+      state.topicName = name
+      state.topicNameImplicit = false
+      save()
+      await ctx.reply(`🆕 Тема готова: ${name}`)
+      return
+    }
     await createTopic(ctx, ctx.match)
     await ctx.reply('🆕 Новая тема создана — открой её в списке тем.')
   } catch (err) {
