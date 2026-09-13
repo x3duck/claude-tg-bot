@@ -67,6 +67,11 @@ input[role="switch"]:checked::after { transform: translateX(18px); }
 .wide-row > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .session-row, .file-row { min-height: 66px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 14px; }
 .current-badge { border-radius: 99px; background: color-mix(in srgb, var(--blue) 18%, transparent); padding: 6px 9px; color: var(--blue); font-size: 12px; }
+.session-ready { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 9px; margin-top: 12px; padding: 13px 14px; border-color: color-mix(in srgb, var(--blue) 40%, var(--line)); }
+.session-ready > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.session-ready strong { font-size: 14px; }
+.session-ready small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.session-ready .small-button { white-space: nowrap; }
 .select-card { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 0 14px; }
 .select-card select { min-width: 0; height: 58px; border: 0; outline: 0; background: transparent; font-size: 16px; font-weight: 650; appearance: none; }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 14px 0; padding: 3px; border-radius: 12px; background: var(--surface); }

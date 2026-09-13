@@ -234,8 +234,13 @@ function renderDetail() {
   $('#verbose-toggle').checked = topic.verbose
   $('#verbose-toggle').disabled = isBusy('verbose')
   $('#model-row').disabled = isBusy('model')
-  $('#new-session').disabled = topic.busy || isBusy('new-session')
+  $('#new-session').disabled = topic.busy || !topic.sessionId || isBusy('new-session')
+  $('#new-session').textContent = topic.sessionId ? '＋ Начать новую сессию' : 'Первое сообщение начнёт сессию'
   $('#advanced-row').disabled = topic.busy || isBusy('cwd')
+  const newSessionReady = !topic.busy && !topic.sessionId
+  $('#new-session-ready').classList.toggle('hidden', !newSessionReady)
+  $('#new-session-title').textContent = topic.sessions.length ? 'Сессия начнётся с первого сообщения' : 'Сессия ещё не начата'
+  $('#open-topic-chat').disabled = !state.data?.botUrl
   $('#pin-topic').textContent = topic.pinned ? 'Открепить' : 'Закрепить'
   $('#rename-topic').classList.toggle('hidden', topic.threadId === 0)
   $('#delete-topic').classList.toggle('hidden', topic.threadId === 0)
@@ -702,7 +707,15 @@ $('#model-row').addEventListener('click', () => {
   syncBackButton()
 })
 $('#verbose-toggle').addEventListener('change', async (event) => { const value = event.target.checked; const result = await patchTopic('verbose', { verbose: value }, null); if (!result) event.target.checked = !value })
-$('#new-session').addEventListener('click', async () => { const topic = selectedTopic(); if (!topic || topic.busy) return; const targetId = topic.id; await mutate('new-session', () => demoMode ? Promise.resolve(true) : apiJson(`/api/topics/${encodeURIComponent(targetId)}/new-session`, { method: 'POST', body: '{}' }), 'Новая сессия создана') })
+$('#new-session').addEventListener('click', async () => { const topic = selectedTopic(); if (!topic || topic.busy) return; const targetId = topic.id; await mutate('new-session', () => demoMode ? Promise.resolve(true) : apiJson(`/api/topics/${encodeURIComponent(targetId)}/new-session`, { method: 'POST', body: '{}' }), 'Новый контекст включён') })
+$('#open-topic-chat').addEventListener('click', () => {
+  const topic = selectedTopic()
+  const botUrl = state.data?.botUrl
+  if (!topic || !botUrl) return
+  const url = topic.threadId ? `${botUrl}/${topic.threadId}` : botUrl
+  if (tg?.openTelegramLink) tg.openTelegramLink(url)
+  else window.open(url, '_blank', 'noopener')
+})
 $('#advanced-row').addEventListener('click', () => { const topic = selectedTopic(); if (!topic || topic.busy) return; $('#cwd-dialog').dataset.topicId = topic.id; $('#cwd-input').value = topic.cwd; $('#cwd-dialog').showModal(); syncBackButton(); setTimeout(() => $('#cwd-input').focus(), 80) })
 $('#cwd-form').addEventListener('submit', async (event) => { event.preventDefault(); const cwd = $('#cwd-input').value.trim(); const targetId = $('#cwd-dialog').dataset.topicId; if (!cwd || !requireTopic(targetId, $('#cwd-dialog'))) return; const result = await patchTopic('cwd', { cwd }, 'Директория изменена', targetId); if (result) $('#cwd-dialog').close() })
 $('#thread-files').addEventListener('click', () => navigate('files', { topicId: state.selectedId }))
