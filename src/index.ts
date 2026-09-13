@@ -1090,6 +1090,7 @@ function topicIsMissing(error: unknown): boolean {
   const message = String(error).toLowerCase()
   return message.includes('message thread not found') || message.includes('topic not found')
     || message.includes('topic was deleted') || message.includes('topic_deleted')
+    || message.includes('topic_id_invalid')
 }
 
 const webServer = startWebServer({
