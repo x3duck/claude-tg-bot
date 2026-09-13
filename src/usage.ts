@@ -106,27 +106,34 @@ export async function fetchPlanUsage(): Promise<PlanUsage> {
 
   const data = (await res.json()) as RawUsage
 
-  let rows: LimitRow[] = (data.limits ?? []).map((l) => ({
-    title: titleFor(l),
-    percent: Math.round(l.percent ?? 0),
-    resetsAt: l.resets_at ?? null,
-    active: l.is_active === true,
-  }))
+  const rows: LimitRow[] = []
+  const addRow = (row: LimitRow) => {
+    if (!rows.some((existing) => existing.title === row.title)) rows.push(row)
+  }
 
-  // Старая форма ответа — на случай, если поле limits пропадёт
-  if (rows.length === 0) {
-    const legacy: [string, { utilization?: number; resets_at?: string | null } | null | undefined][] = [
-      ['Сессия (5 ч)', data.five_hour],
-      ['Неделя, всего', data.seven_day],
-    ]
-    rows = legacy
-      .filter(([, v]) => v)
-      .map(([title, v]) => ({
-        title,
-        percent: Math.round(v!.utilization ?? 0),
-        resetsAt: v!.resets_at ?? null,
-        active: false,
-      }))
+  if (data.five_hour) {
+    addRow({
+      title: 'Сессия (5 ч)',
+      percent: Math.round(data.five_hour.utilization ?? 0),
+      resetsAt: data.five_hour.resets_at ?? null,
+      active: false,
+    })
+  }
+  if (data.seven_day) {
+    addRow({
+      title: 'Неделя, всего',
+      percent: Math.round(data.seven_day.utilization ?? 0),
+      resetsAt: data.seven_day.resets_at ?? null,
+      active: false,
+    })
+  }
+  for (const limit of data.limits ?? []) {
+    addRow({
+      title: titleFor(limit),
+      percent: Math.round(limit.percent ?? 0),
+      resetsAt: limit.resets_at ?? null,
+      active: limit.is_active === true,
+    })
   }
 
   const extra = data.extra_usage
