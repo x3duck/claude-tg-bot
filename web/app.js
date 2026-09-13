@@ -69,6 +69,7 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
+const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="/icons.svg#${name}" /></svg>`
 const topicById = (id) => state.data?.topics.find((topic) => topic.id === id) || null
 const selectedTopic = () => topicById(state.selectedId)
 
@@ -216,7 +217,7 @@ function renderThreads() {
 
 function threadMarkup(topic) {
   const subtitle = topic.busy ? `${escapeHtml(topic.run?.action || 'Claude работает')} · ${formatElapsed(topic.run?.startedAt)}` : topic.lastActivityAt ? `Последняя активность · ${relativeTime(topic.lastActivityAt)}` : 'Нет активной сессии'
-  return `<button class="thread-row" data-topic="${escapeHtml(topic.id)}"><span class="thread-icon">${topic.busy ? '<span class="status-dot active"></span>' : '○'}</span><span class="row-copy"><strong>${escapeHtml(topic.name)}</strong><small class="${topic.busy ? 'active-copy' : ''}">${subtitle}</small></span>${topic.pinned ? '<span class="pin">◆</span>' : '<span class="chevron">›</span>'}</button>`
+  return `<button class="thread-row" data-topic="${escapeHtml(topic.id)}"><span class="thread-status"><span class="status-dot ${topic.busy ? 'active' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(topic.name)}</strong><small class="${topic.busy ? 'active-copy' : ''}">${subtitle}</small></span>${topic.pinned ? `<span class="pin">${icon('pin')}</span>` : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`
 }
 
 function openTopic(id) {
@@ -248,7 +249,7 @@ function renderDetail() {
   runCard.classList.toggle('hidden', !topic.busy && !topic.run)
   runCard.innerHTML = topic.busy || topic.run ? `<div class="run-head"><span class="status-dot active"></span><div><strong>${topic.run?.stopping ? 'Останавливаем…' : 'Claude работает'}</strong><small>${escapeHtml(topic.run?.action || 'Выполняет текущую задачу')}</small></div></div><div class="run-meta"><span>${formatElapsed(topic.run?.startedAt)}</span><span>В очереди: ${Number(topic.queued) || 0}</span><button id="stop-run" class="stop-button" ${topic.run?.stopping || isBusy('stop') ? 'disabled' : ''}>${topic.run?.stopping ? 'Остановка…' : 'Остановить'}</button></div>` : ''
   $('#stop-run')?.addEventListener('click', stopRun)
-  $('#sessions-list').innerHTML = topic.sessions.map((session, index) => `<button class="session-row" data-session="${escapeHtml(session.id)}" ${topic.busy || isBusy('session') ? 'disabled' : ''}><span class="file-icon">▤</span><span class="row-copy"><strong>${escapeHtml(session.title || `Сессия ${index + 1}`)}</strong><small>${escapeHtml(formatDate(session.startedAt))}</small></span>${session.id === topic.sessionId ? '<span class="current-badge">Текущая</span>' : '<span class="chevron">›</span>'}</button>`).join('')
+  $('#sessions-list').innerHTML = topic.sessions.map((session, index) => `<button class="session-row" data-session="${escapeHtml(session.id)}" ${topic.busy || isBusy('session') ? 'disabled' : ''}><span class="session-icon">${icon('terminal')}<span class="status-dot ${session.id === topic.sessionId ? 'current' : ''}"></span></span><span class="row-copy"><strong>${escapeHtml(session.title || `Сессия ${index + 1}`)}</strong><small>${escapeHtml(formatDate(session.startedAt))}</small></span>${session.id === topic.sessionId ? '<span class="current-badge">Текущая</span>' : `<span class="chevron">${icon('chevron-right')}</span>`}</button>`).join('')
   $$('[data-session]').forEach((button) => button.addEventListener('click', () => selectSession(button.dataset.session)))
 }
 
@@ -339,7 +340,7 @@ function renderFiles() {
     message.className = 'notice'
     message.textContent = `Файл загружен в inbox: ${state.files.uploadNotice}`
   } else message.classList.add('hidden')
-  $('#files-list').innerHTML = state.files.entries.map((entry) => `<button class="file-row" data-file="${escapeHtml(entry.id)}"><span class="file-icon">${entry.kind === 'directory' ? '□' : fileIcon(entry)}</span><span class="row-copy"><strong>${escapeHtml(entry.name)}</strong><small>${entry.kind === 'directory' ? 'Папка' : `${formatBytes(entry.size)} · ${formatDate(entry.mtime)}`}</small></span><span class="chevron">›</span></button>`).join('')
+  $('#files-list').innerHTML = state.files.entries.map((entry) => `<button class="file-row" data-file="${escapeHtml(entry.id)}"><span class="file-icon ${entry.kind === 'directory' ? 'directory-icon' : ''}">${entry.kind === 'directory' ? icon('folder') : fileIcon(entry)}</span><span class="row-copy"><strong>${escapeHtml(entry.name)}</strong><small>${entry.kind === 'directory' ? 'Папка' : `${formatBytes(entry.size)} · ${formatDate(entry.mtime)}`}</small></span><span class="chevron">${icon('chevron-right')}</span></button>`).join('')
   $('#load-more-files').classList.toggle('hidden', state.files.nextOffset === null)
   $('#load-more-files').disabled = state.files.loading
   $('#refresh-files').classList.toggle('hidden', state.files.pagesLoaded <= 1)
@@ -714,7 +715,7 @@ function relativeTime(value) { const time = new Date(value).getTime(); if (!Numb
 function formatElapsed(value) { const started = Number(value); if (!started) return 'только что'; const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000)); const minutes = Math.floor(seconds / 60); return minutes ? `${minutes} мин ${seconds % 60} с` : `${seconds} с` }
 function formatDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }
 function formatReset(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }
-function fileIcon(file) { return file.preview === 'image' ? '▧' : file.preview === 'pdf' ? 'PDF' : file.preview === 'markdown' ? 'M↓' : '▤' }
+function fileIcon(file) { return file.preview === 'image' ? icon('file-image') : file.preview === 'text' || file.preview === 'markdown' ? icon('file-text') : icon('file') }
 function updateFreshness() { const text = state.lastSuccessAt ? relativeTime(state.lastSuccessAt) : null; $('#sync-state').textContent = state.stale ? `Данные устарели · ${text}` : text ? `Обновлено ${text}` : state.overviewError ? 'Не удалось обновить' : 'Загрузка…'; if (state.data) renderSettings() }
 
 $$('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)))
