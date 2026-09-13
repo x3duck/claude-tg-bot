@@ -152,12 +152,24 @@ class Progress {
     this.partial = text
   }
 
+  clearPartial(): void {
+    this.partial = ''
+  }
+
+  async setFinal(text: string): Promise<void> {
+    if (!text) return
+    this.partial = text
+    this.lines = []
+    this.requestFlush()
+    await this.flushTask
+  }
+
   private compose(): string {
     const progress = this.lines.at(-1)
     if (this.partial) {
       const suffix = this.verbose && progress ? `\n\n⏳ ${progress}` : ''
       const room = 4000 - suffix.length
-      const text = this.partial.length > room ? `…${this.partial.slice(-(room - 1))}` : this.partial
+      const text = this.partial.length > room ? `${this.partial.slice(0, room - 1)}…` : this.partial
       return text + suffix
     }
     if (!this.verbose || this.lines.length === 0) return ''
@@ -262,6 +274,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
             save()
           }
         } else if (e.type === 'tool') {
+          progress.clearPartial()
           progress.add(e.label)
         } else if (e.type === 'note') {
           progress.add(e.text)
@@ -282,6 +295,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     const summary = state.verbose
       ? `✅ ${secs} с · ${result.toolCalls} инстр. · ${fmtTokens(result.inputTokens)}→${fmtTokens(result.outputTokens)} токенов`
       : null
+    await progress.setFinal(result.text)
     await progress.finish()
     if (abort.signal.aborted) await ctx.reply('⏹ Остановлено')
 
