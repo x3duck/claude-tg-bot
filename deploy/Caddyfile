@@ -1,0 +1,10 @@
+{
+  auto_https disable_redirects
+  http_port 8088
+}
+
+vesperloop.duckdns.org {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:3100
+  header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}

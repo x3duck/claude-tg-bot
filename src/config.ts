@@ -37,6 +37,8 @@ if (ALLOWED_USER_IDS.size === 0) {
 
 export const WORKSPACES_DIR = process.env.WORKSPACES_DIR ?? path.join(ROOT, 'workspaces')
 export const DATA_FILE = process.env.DATA_FILE ?? path.join(ROOT, 'data', 'state.json')
+export const WEB_PORT = Number(process.env.WEB_PORT ?? 3100)
+export const PUBLIC_URL = (process.env.PUBLIC_URL ?? '').replace(/\/$/, '')
 
 export const DEFAULT_MODEL = process.env.DEFAULT_MODEL ?? 'claude-opus-5'
 

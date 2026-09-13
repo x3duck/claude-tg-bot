@@ -22,6 +22,7 @@ export type ChatState = {
   cwd: string | null
   model: string
   verbose: boolean
+  topicName?: string
   topicNameImplicit?: boolean
   sessionId: string | null
   sessions: SessionRecord[]
@@ -143,6 +144,10 @@ export function rememberSession(scopeId: string | number, session: SessionRecord
 export function deleteChat(scopeId: string | number): void {
   delete store[String(scopeId)]
   save()
+}
+
+export function listChats(): [string, ChatState][] {
+  return Object.entries(store)
 }
 
 load()

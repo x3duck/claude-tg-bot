@@ -7,10 +7,12 @@ import {
   BOT_TOKEN,
   MAX_SEND_BYTES,
   MODELS,
+  PUBLIC_URL,
   PROGRESS_INTERVAL_MS,
   PROGRESS_TAIL,
+  WEB_PORT,
 } from './config.ts'
-import { addUsage, deleteChat, getChat, rememberSession, resetSessionUsage, save, saveNow } from './state.ts'
+import { addUsage, deleteChat, getChat, listChats, rememberSession, resetSessionUsage, save, saveNow } from './state.ts'
 import type { UsageTotals } from './state.ts'
 import { bar, dot, fetchPlanUsage, fmtReset, UsageError } from './usage.ts'
 import { renderForTelegram } from './telegram-md.ts'
@@ -28,6 +30,7 @@ import {
 } from './workspace.ts'
 import type { DownloadedFile, IncomingFile } from './workspace.ts'
 import { authStatus, startLogin } from './auth.ts'
+import { startWebServer } from './web.ts'
 
 const bot = new Bot(BOT_TOKEN)
 let activeLogin: ReturnType<typeof startLogin> | null = null
@@ -424,7 +427,9 @@ async function createTopic(ctx: Context, requestedName: string): Promise<void> {
   const name = requested || 'Новая задача'
   const topic = await ctx.api.createForumTopic(ctx.chat!.id, name)
   const scopeId = `${ctx.chat!.id}:${topic.message_thread_id}`
-  getChat(scopeId).topicNameImplicit = !requested
+  const state = getChat(scopeId)
+  state.topicName = name
+  state.topicNameImplicit = !requested
   save()
 }
 
@@ -494,6 +499,7 @@ bot.command('rename', async (ctx) => {
   }
   await ctx.api.editForumTopic(ctx.chat.id, threadId, { name })
   const state = getChat(scopeFor(ctx))
+  state.topicName = name
   state.topicNameImplicit = false
   save()
   await ctx.reply(`Тема переименована: ${name}`)
@@ -936,6 +942,7 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
     const name = prompt.replace(/\s+/g, ' ').slice(0, 64)
     try {
       await ctx.api.editForumTopic(ctx.chat!.id, threadId, { name })
+      state.topicName = name
       state.topicNameImplicit = false
       save()
     } catch {}
@@ -949,15 +956,19 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
 }
 
 bot.on('message:forum_topic_created', async (ctx) => {
+  const state = getChat(scopeFor(ctx))
+  state.topicName = ctx.message.forum_topic_created.name
   if (ctx.message.forum_topic_created.is_name_implicit) {
-    getChat(scopeFor(ctx)).topicNameImplicit = true
-    save()
+    state.topicNameImplicit = true
   }
+  save()
 })
 
 bot.on('message:forum_topic_edited', async (ctx) => {
   if (ctx.message.forum_topic_edited.name) {
-    getChat(scopeFor(ctx)).topicNameImplicit = false
+    const state = getChat(scopeFor(ctx))
+    state.topicName = ctx.message.forum_topic_edited.name
+    state.topicNameImplicit = false
     save()
   }
 })
@@ -1020,6 +1031,84 @@ bot.on('message', async (ctx) => {
 
 /* ------------------------------------------------------------------- запуск */
 
+function ownedScope(userId: number, scopeId: string): ScopeId {
+  if (!scopeId.startsWith(`${userId}:`) || !listChats().some(([id]) => id === scopeId)) {
+    throw new Error('Тред не найден')
+  }
+  return scopeId
+}
+
+const webServer = startWebServer({
+  port: WEB_PORT,
+  botToken: BOT_TOKEN,
+  allowedUsers: ALLOWED_USER_IDS,
+  getOverview: async (userId) => {
+    const [authenticated, usage] = await Promise.all([
+      authStatus(),
+      fetchPlanUsage().catch(() => null),
+    ])
+    const topics = listChats()
+      .filter(([scopeId]) => scopeId.startsWith(`${userId}:`))
+      .map(([scopeId, state]) => {
+        const threadId = Number(scopeId.split(':')[1] ?? 0)
+        const rt = runtimeFor(scopeId)
+        const current = state.sessions.find((session) => session.id === state.sessionId)
+        const cwd = cwdFor(scopeId)
+        const ws = workspaceFor(scopeId)
+        const files = listFiles(ws, cwd).slice(0, 30).map((file) => ({
+          name: path.basename(file.path),
+          kind: 'file',
+          meta: `${fmtSize(file.size)} · ${new Date(file.mtime).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}`,
+        }))
+        return {
+          id: scopeId,
+          threadId,
+          name: state.topicName || current?.title || (threadId === 0 ? 'Основной чат' : `Тред ${threadId}`),
+          model: MODELS.find((model) => model.id === state.model)?.label.split(' —')[0] ?? state.model,
+          modelId: state.model,
+          cwd,
+          verbose: state.verbose,
+          busy: rt.busy,
+          queued: rt.queue.length,
+          sessions: state.sessions,
+          sessionId: state.sessionId,
+          files,
+        }
+      })
+      .sort((a, b) => Number(b.busy) - Number(a.busy) || a.name.localeCompare(b.name, 'ru'))
+    return {
+      authenticated,
+      limits: usage?.rows.map((row) => ({ title: row.title, percent: row.percent, resetsAt: row.resetsAt })) ?? [],
+      topics,
+    }
+  },
+  patchTopic: async (userId, requestedScope, patch) => {
+    const scopeId = ownedScope(userId, requestedScope)
+    const state = getChat(scopeId)
+    if (typeof patch.verbose === 'boolean') state.verbose = patch.verbose
+    if (typeof patch.model === 'string' && MODELS.some((model) => model.id === patch.model)) state.model = patch.model
+    if (typeof patch.sessionId === 'string' && state.sessions.some((session) => session.id === patch.sessionId)) {
+      state.sessionId = patch.sessionId
+      resetSessionUsage(scopeId)
+    }
+    save()
+    return { ok: true }
+  },
+  stopTopic: async (userId, requestedScope) => {
+    const rt = runtimeFor(ownedScope(userId, requestedScope))
+    rt.queue.length = 0
+    rt.abort?.abort()
+    return { ok: true }
+  },
+  newSession: async (userId, requestedScope) => {
+    const scopeId = ownedScope(userId, requestedScope)
+    getChat(scopeId).sessionId = null
+    resetSessionUsage(scopeId)
+    save()
+    return { ok: true }
+  },
+})
+
 bot.catch((err) => {
   console.error('[bot] необработанная ошибка:', err.error)
 })
@@ -1027,6 +1116,7 @@ bot.catch((err) => {
 const shutdown = (signal: string): void => {
   console.log(`[bot] ${signal} — останавливаюсь`)
   saveNow()
+  webServer.close()
   void bot.stop().finally(() => process.exit(0))
 }
 
@@ -1036,7 +1126,11 @@ process.once('SIGTERM', () => shutdown('SIGTERM'))
 console.log(`[bot] разрешённые пользователи: ${[...ALLOWED_USER_IDS].join(', ')}`)
 try {
   await bot.api.setMyCommands(COMMANDS, { scope: { type: 'all_private_chats' } })
-  await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } })
+  await bot.api.setChatMenuButton({
+    menu_button: PUBLIC_URL
+      ? { type: 'web_app', text: 'Управление', web_app: { url: PUBLIC_URL } }
+      : { type: 'commands' },
+  })
 } catch (err) {
   console.error('[bot] не удалось обновить меню команд:', err)
 }
