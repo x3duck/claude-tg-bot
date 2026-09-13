@@ -70,9 +70,11 @@ const state = {
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="/icons.svg#${name}" /></svg>`
+const renderedHtml = new WeakMap()
 function updateHtml(element, markup) {
-  if (element.innerHTML === markup) return false
+  if (renderedHtml.get(element) === markup) return false
   element.innerHTML = markup
+  renderedHtml.set(element, markup)
   return true
 }
 const topicById = (id) => state.data?.topics.find((topic) => topic.id === id) || null
@@ -202,7 +204,7 @@ function renderAll() {
 function renderThreads() {
   if (!state.data) {
     $('#create-topic').disabled = true
-    $('#threads-list').innerHTML = `<div class="quiet-note">${state.overviewError ? 'Треды недоступны' : 'Загружаем треды…'}</div>`
+    updateHtml($('#threads-list'), `<div class="quiet-note">${state.overviewError ? 'Треды недоступны' : 'Загружаем треды…'}</div>`)
     return
   }
   $('#create-topic').disabled = false
