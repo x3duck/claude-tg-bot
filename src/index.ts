@@ -32,16 +32,6 @@ import { authStatus, startLogin } from './auth.ts'
 const bot = new Bot(BOT_TOKEN)
 let activeLogin: ReturnType<typeof startLogin> | null = null
 
-bot.on('stopped_message_generation', async (ctx) => {
-  const stopped = ctx.stoppedMessageGeneration
-  if (!ALLOWED_USER_IDS.has(stopped.chat.id)) return
-  const scopeId = `${stopped.chat.id}:${stopped.message_thread_id ?? 0}`
-  const rt = runtimes.get(scopeId)
-  if (!rt || draftScopes.get(stopped.draft_id) !== scopeId) return
-  rt.queue.length = 0
-  rt.abort?.abort()
-})
-
 /* ------------------------------------------------------------------ доступ */
 
 bot.use(async (ctx, next) => {
@@ -119,7 +109,6 @@ function cwdFor(scopeId: ScopeId): string {
 /* ---------------------------------------------------------- вывод прогресса */
 
 let nextDraftId = Math.floor(Date.now() % 2_000_000_000) || 1
-const draftScopes = new Map<number, ScopeId>()
 
 class Progress {
   private lines: string[] = []
@@ -162,16 +151,11 @@ class Progress {
     }
   }
 
-  async finish(summary: string | null): Promise<void> {
+  async finish(): Promise<void> {
     this.closed = true
     if (this.timer) clearInterval(this.timer)
     try {
-      if (summary) {
-        await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, summary, {
-          reply_markup: { inline_keyboard: [] },
-        })
-      }
-      else await this.ctx.api.deleteMessage(this.ctx.chat!.id, this.messageId)
+      await this.ctx.api.deleteMessage(this.ctx.chat!.id, this.messageId)
     } catch {
     }
   }
@@ -190,11 +174,9 @@ class DraftStream {
   private timer: NodeJS.Timeout | null = null
 
   private readonly ctx: Context
-  private readonly scopeId: ScopeId
 
-  constructor(ctx: Context, scopeId: ScopeId) {
+  constructor(ctx: Context) {
     this.ctx = ctx
-    this.scopeId = scopeId
     this.allocateDraft()
     this.timer = setInterval(() => this.requestFlush(), 20_000)
   }
@@ -225,9 +207,7 @@ class DraftStream {
   }
 
   private allocateDraft(): void {
-    if (this.draftId) draftScopes.delete(this.draftId)
     this.draftId = nextDraftId++
-    draftScopes.set(this.draftId, this.scopeId)
   }
 
   private requestFlush(): void {
@@ -246,8 +226,6 @@ class DraftStream {
       try {
         await this.ctx.api.sendMessageDraft(this.ctx.chat!.id, this.draftId, text, {
           message_thread_id: this.ctx.msg?.message_thread_id,
-          can_stop: true,
-          keep_on_stop: true,
         })
       } catch {
       }
@@ -256,7 +234,6 @@ class DraftStream {
 
   async finish(): Promise<void> {
     this.closed = true
-    draftScopes.delete(this.draftId)
     if (this.timer) clearInterval(this.timer)
     try {
       await this.flushTask
@@ -293,13 +270,9 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
   const cwd = cwdFor(scopeId)
   const rt = runtimeFor(scopeId)
 
-  const status = await ctx.reply('⏳ Передаю задачу Claude…', {
-    reply_markup: {
-      inline_keyboard: [[{ text: '⏹ Остановить', callback_data: 'run:stop' }]],
-    },
-  })
+  const status = await ctx.reply('⏳ Передаю задачу Claude…')
   const progress = new Progress(ctx, status.message_id, state.verbose)
-  const draft = new DraftStream(ctx, scopeId)
+  const draft = new DraftStream(ctx)
 
   const abort = new AbortController()
   rt.abort = abort
@@ -354,7 +327,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
       : null
     await draft.setFinal(result.text)
     await draft.finish()
-    await progress.finish(summary)
+    await progress.finish()
     if (abort.signal.aborted) await ctx.reply('⏹ Остановлено')
 
     if (result.text) await sendAnswer(ctx, result.text)
@@ -365,7 +338,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
   } catch (err) {
     const aborted = abort.signal.aborted || (err instanceof Error && err.name === 'AbortError')
     await draft.finish()
-    await progress.finish(aborted ? '⏹ Остановлено' : '❌ Ошибка')
+    await progress.finish()
     if (aborted) await ctx.reply('⏹ Остановлено')
     if (!aborted) {
       console.error('[run] ошибка выполнения:', err)
@@ -432,7 +405,6 @@ async function enqueue(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
 /* ------------------------------------------------------------------ команды */
 
 const COMMANDS = [
-  { command: 'panel', description: 'Панель управления темой' },
   { command: 'new_topic', description: 'Создать новую тему' },
   { command: 'rename', description: 'Переименовать текущую тему' },
   { command: 'delete_topic', description: 'Удалить текущую тему' },
@@ -447,47 +419,6 @@ const COMMANDS = [
   { command: 'help', description: 'Справка' },
 ] as const
 
-function panelMarkup() {
-  return {
-    inline_keyboard: [
-      [
-        { text: '🆕 Новая тема', callback_data: 'panel:new_topic' },
-        { text: '⏹ Stop', callback_data: 'panel:stop' },
-      ],
-      [
-        { text: '🤖 Модель', callback_data: 'panel:model' },
-        { text: '👁 Verbose', callback_data: 'panel:verbose' },
-      ],
-      [
-        { text: '📁 Файлы', callback_data: 'panel:files' },
-        { text: '🔐 Auth', callback_data: 'panel:auth' },
-      ],
-      [{ text: '🔄 Обновить', callback_data: 'panel:refresh' }],
-    ],
-  }
-}
-
-function panelText(scopeId: ScopeId): string {
-  const state = getChat(scopeId)
-  const rt = runtimeFor(scopeId)
-  return [
-    '<b>Панель темы</b>',
-    `Модель: <code>${state.model}</code>`,
-    `Папка: <code>${cwdFor(scopeId)}</code>`,
-    `Сессия: ${state.sessionId ? `<code>${state.sessionId.slice(0, 8)}…</code>` : 'новая'}`,
-    `Verbose: ${state.verbose ? 'on' : 'off'}`,
-    `Очередь: ${rt.busy ? `работает + ${rt.queue.length}` : 'свободна'}`,
-  ].join('\n')
-}
-
-async function renderPanel(ctx: Context): Promise<void> {
-  try {
-    await ctx.editMessageText(panelText(scopeFor(ctx)), { parse_mode: 'HTML', reply_markup: panelMarkup() })
-  } catch (err) {
-    if (!/message is not modified/i.test(String(err))) throw err
-  }
-}
-
 async function createTopic(ctx: Context, requestedName: string): Promise<void> {
   const requested = requestedName.replace(/\s+/g, ' ').trim().slice(0, 128)
   const name = requested || 'Новая задача'
@@ -495,11 +426,6 @@ async function createTopic(ctx: Context, requestedName: string): Promise<void> {
   const scopeId = `${ctx.chat!.id}:${topic.message_thread_id}`
   getChat(scopeId).topicNameImplicit = !requested
   save()
-  await ctx.api.sendMessage(ctx.chat!.id, panelText(scopeId), {
-    message_thread_id: topic.message_thread_id,
-    parse_mode: 'HTML',
-    reply_markup: panelMarkup(),
-  })
 }
 
 const HELP = [
@@ -509,7 +435,6 @@ const HELP = [
   'подпись к файлу становится промтом.',
   '',
   '<b>Сессия</b>',
-  '/panel — панель управления темой',
   '/new_topic &lt;название&gt; — создать отдельную тему',
   '/rename &lt;название&gt; — переименовать текущую тему',
   '/delete_topic — удалить тему и архивировать файлы',
@@ -545,10 +470,6 @@ bot.command('start', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   await ctx.reply(HELP, { parse_mode: 'HTML' })
-})
-
-bot.command('panel', async (ctx) => {
-  await ctx.reply(panelText(scopeFor(ctx)), { parse_mode: 'HTML', reply_markup: panelMarkup() })
 })
 
 bot.command('new_topic', async (ctx) => {
@@ -593,17 +514,6 @@ bot.command('delete_topic', async (ctx) => {
   })
 })
 
-bot.callbackQuery('run:stop', async (ctx) => {
-  const rt = runtimeFor(scopeFor(ctx))
-  rt.queue.length = 0
-  rt.abort?.abort()
-  await ctx.answerCallbackQuery('Останавливаю')
-  try {
-    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } })
-  } catch {
-  }
-})
-
 bot.callbackQuery(/^topic_delete:(yes|no)$/, async (ctx) => {
   if (ctx.match[1] === 'no') {
     await ctx.answerCallbackQuery('Отменено')
@@ -624,76 +534,6 @@ bot.callbackQuery(/^topic_delete:(yes|no)$/, async (ctx) => {
   runtimes.delete(scopeId)
   await ctx.answerCallbackQuery('Удаляю тему')
   await ctx.api.deleteForumTopic(ctx.chat!.id, threadId)
-})
-
-bot.callbackQuery(/^panel:(.+)$/, async (ctx) => {
-  const action = ctx.match[1]
-  const scopeId = scopeFor(ctx)
-  if (action === 'new_topic') {
-    await ctx.answerCallbackQuery('Создаю новую тему')
-    await createTopic(ctx, '')
-    return
-  }
-  if (action === 'stop') {
-    const rt = runtimeFor(scopeId)
-    rt.queue.length = 0
-    rt.abort?.abort()
-    await ctx.answerCallbackQuery('Останавливаю')
-    await renderPanel(ctx)
-    return
-  }
-  if (action === 'verbose') {
-    const state = getChat(scopeId)
-    state.verbose = !state.verbose
-    save()
-    await ctx.answerCallbackQuery(`Verbose: ${state.verbose ? 'on' : 'off'}`)
-    await renderPanel(ctx)
-    return
-  }
-  if (action === 'model') {
-    await ctx.answerCallbackQuery()
-    await ctx.editMessageText('Выбери модель:', {
-      reply_markup: {
-        inline_keyboard: [
-          ...MODELS.map((m) => [{ text: m.label, callback_data: `panel_model:${m.id}` }]),
-          [{ text: '← Назад', callback_data: 'panel:refresh' }],
-        ],
-      },
-    })
-    return
-  }
-  if (action === 'files') {
-    const ws = workspaceFor(scopeId)
-    const files = listFiles(ws, cwdFor(scopeId))
-    runtimeFor(scopeId).lastListing = files.map((f) => f.path)
-    const text = files.length
-      ? files.slice(0, 15).map((f, i) => `${i + 1}. ${path.basename(f.path)} — ${fmtSize(f.size)}`).join('\n')
-      : 'Файлов пока нет.'
-    await ctx.answerCallbackQuery()
-    await ctx.editMessageText(text, { reply_markup: { inline_keyboard: [[{ text: '← Назад', callback_data: 'panel:refresh' }]] } })
-    return
-  }
-  if (action === 'auth') {
-    await ctx.answerCallbackQuery({
-      text: (await authStatus()) ? 'Claude авторизован' : 'Нужен вход: отправь /login',
-      show_alert: true,
-    })
-    return
-  }
-  await ctx.answerCallbackQuery()
-  await renderPanel(ctx)
-})
-
-bot.callbackQuery(/^panel_model:(.+)$/, async (ctx) => {
-  const id = ctx.match[1]
-  if (!MODELS.some((m) => m.id === id)) {
-    await ctx.answerCallbackQuery('Неизвестная модель')
-    return
-  }
-  getChat(scopeFor(ctx)).model = id
-  save()
-  await ctx.answerCallbackQuery(`Модель: ${id}`)
-  await renderPanel(ctx)
 })
 
 bot.command('auth_status', async (ctx) => {
