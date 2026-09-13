@@ -759,6 +759,16 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
 
 bot.on('message', async (ctx) => {
   const m = ctx.message
+  if (
+    m.forum_topic_created ||
+    m.forum_topic_edited ||
+    m.forum_topic_closed ||
+    m.forum_topic_reopened ||
+    m.general_forum_topic_hidden ||
+    m.general_forum_topic_unhidden
+  ) {
+    return
+  }
   const files = extractFiles(ctx)
   const text = m.text ?? m.caption ?? ''
 
