@@ -22,6 +22,7 @@ export type ChatState = {
   cwd: string | null
   model: string
   verbose: boolean
+  topicNameImplicit?: boolean
   sessionId: string | null
   sessions: SessionRecord[]
   usage: { session: UsageTotals; total: UsageTotals }
@@ -136,6 +137,11 @@ export function rememberSession(scopeId: string | number, session: SessionRecord
     s.sessions.unshift(session)
     s.sessions = s.sessions.slice(0, 20)
   }
+  save()
+}
+
+export function deleteChat(scopeId: string | number): void {
+  delete store[String(scopeId)]
   save()
 }
 

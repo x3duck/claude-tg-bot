@@ -6,6 +6,7 @@ export type RunEvent =
   | { type: 'session'; sessionId: string; model: string }
   | { type: 'tool'; label: string }
   | { type: 'note'; text: string }
+  | { type: 'partial'; text: string }
 
 export type RunResult = {
   ok: boolean
@@ -125,7 +126,7 @@ export async function runPrompt(p: RunParams): Promise<RunResult> {
     },
     additionalDirectories: [p.ws.root],
     abortController: p.abort,
-    includePartialMessages: false,
+    includePartialMessages: true,
     stderr: (data: string) => {
       const line = data.trim()
       if (line) console.error('[claude]', line)
@@ -147,9 +148,19 @@ export async function runPrompt(p: RunParams): Promise<RunResult> {
     turns: 0,
     toolCalls: 0,
   }
+  let partialText = ''
 
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     switch (msg.type) {
+      case 'stream_event': {
+        if (msg.parent_tool_use_id !== null) break
+        if (msg.event.type === 'message_start') partialText = ''
+        if (msg.event.type === 'content_block_delta' && msg.event.delta.type === 'text_delta') {
+          partialText += msg.event.delta.text
+          p.onEvent({ type: 'partial', text: partialText })
+        }
+        break
+      }
       case 'system': {
         if (msg.subtype === 'init') {
           sessionId = msg.session_id

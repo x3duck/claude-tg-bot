@@ -24,6 +24,15 @@ export function workspaceFor(scopeId: string | number): Workspace {
   return ws
 }
 
+export function archiveWorkspace(scopeId: string | number): void {
+  const name = String(scopeId).replace(':', '_')
+  const root = path.join(WORKSPACES_DIR, name)
+  if (!fs.existsSync(root)) return
+  const archive = path.join(WORKSPACES_DIR, '.archive')
+  fs.mkdirSync(archive, { recursive: true })
+  fs.renameSync(root, path.join(archive, `${name}_${stamp()}`))
+}
+
 /** Убирает из имени всё, что может увести запись за пределы папки. */
 export function safeName(name: string): string {
   const base = path.basename(name).replace(/[^\w.()\[\]\-\u0400-\u04FF]+/gu, '_').replace(/^\.+/, '')

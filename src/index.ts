@@ -10,13 +10,14 @@ import {
   PROGRESS_INTERVAL_MS,
   PROGRESS_TAIL,
 } from './config.ts'
-import { addUsage, getChat, rememberSession, resetSessionUsage, save, saveNow } from './state.ts'
+import { addUsage, deleteChat, getChat, rememberSession, resetSessionUsage, save, saveNow } from './state.ts'
 import type { UsageTotals } from './state.ts'
 import { bar, dot, fetchPlanUsage, fmtReset, UsageError } from './usage.ts'
 import { renderForTelegram } from './telegram-md.ts'
 import { runPrompt } from './runner.ts'
 import {
   clearWorkspaceFiles,
+  archiveWorkspace,
   collectArtifacts,
   downloadIncoming,
   fmtSize,
@@ -30,6 +31,16 @@ import { authStatus, startLogin } from './auth.ts'
 
 const bot = new Bot(BOT_TOKEN)
 let activeLogin: ReturnType<typeof startLogin> | null = null
+
+bot.on('stopped_message_generation', async (ctx) => {
+  const stopped = ctx.stoppedMessageGeneration
+  if (!ALLOWED_USER_IDS.has(stopped.chat.id)) return
+  const scopeId = `${stopped.chat.id}:${stopped.message_thread_id ?? 0}`
+  const rt = runtimes.get(scopeId)
+  if (!rt || draftScopes.get(stopped.draft_id) !== scopeId) return
+  rt.queue.length = 0
+  rt.abort?.abort()
+})
 
 /* ------------------------------------------------------------------ доступ */
 
@@ -107,29 +118,47 @@ function cwdFor(scopeId: ScopeId): string {
 
 /* ---------------------------------------------------------- вывод прогресса */
 
+let nextDraftId = Math.floor(Date.now() % 2_000_000_000) || 1
+const draftScopes = new Map<number, ScopeId>()
+
 class Progress {
   private lines: string[] = []
+  private partial = ''
   private rendered = ''
   private timer: NodeJS.Timeout | null = null
   private closed = false
+  private lastSentAt = 0
 
   private readonly ctx: Context
-  private readonly messageId: number
+  private readonly draftId: number
   private readonly verbose: boolean
 
-  constructor(ctx: Context, messageId: number, verbose: boolean) {
+  constructor(ctx: Context, verbose: boolean) {
     this.ctx = ctx
-    this.messageId = messageId
+    this.draftId = nextDraftId++
+    draftScopes.set(this.draftId, scopeFor(ctx))
     this.verbose = verbose
-    this.timer = setInterval(() => void this.flush(), PROGRESS_INTERVAL_MS)
+    this.timer = setInterval(() => void this.flush(), Math.min(PROGRESS_INTERVAL_MS, 1000))
+    void this.flush()
   }
 
   add(line: string): void {
     this.lines.push(line)
   }
 
+  setPartial(text: string): void {
+    this.partial = text
+  }
+
   private compose(): string {
-    if (!this.verbose || this.lines.length === 0) return '⏳ Работаю…'
+    const progress = this.lines.at(-1)
+    if (this.partial) {
+      const suffix = this.verbose && progress ? `\n\n⏳ ${progress}` : ''
+      const room = 4000 - suffix.length
+      const text = this.partial.length > room ? `…${this.partial.slice(-(room - 1))}` : this.partial
+      return text + suffix
+    }
+    if (!this.verbose || this.lines.length === 0) return ''
     const tail = this.lines.slice(-PROGRESS_TAIL)
     const hidden = this.lines.length - tail.length
     const head = hidden > 0 ? `⏳ Работаю… (+${hidden} шагов выше)\n` : '⏳ Работаю…\n'
@@ -139,27 +168,23 @@ class Progress {
   private async flush(): Promise<void> {
     if (this.closed) return
     const text = this.compose().slice(0, 3800)
-    if (text === this.rendered) return
+    if (text === this.rendered && Date.now() - this.lastSentAt < 20_000) return
     this.rendered = text
+    this.lastSentAt = Date.now()
     try {
-      await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, text)
+      await this.ctx.api.sendMessageDraft(this.ctx.chat!.id, this.draftId, text, {
+        message_thread_id: this.ctx.msg?.message_thread_id,
+        can_stop: true,
+        keep_on_stop: true,
+      })
     } catch {
-      // «message is not modified» и троттлинг Telegram — не повод падать
     }
   }
 
-  async finish(summary: string | null): Promise<void> {
+  finish(): void {
     this.closed = true
+    draftScopes.delete(this.draftId)
     if (this.timer) clearInterval(this.timer)
-    try {
-      if (summary === null) {
-        await this.ctx.api.deleteMessage(this.ctx.chat!.id, this.messageId)
-      } else {
-        await this.ctx.api.editMessageText(this.ctx.chat!.id, this.messageId, summary)
-      }
-    } catch {
-      // сообщение могли удалить вручную
-    }
   }
 }
 
@@ -191,8 +216,7 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
   const cwd = cwdFor(scopeId)
   const rt = runtimeFor(scopeId)
 
-  const status = await ctx.reply('⏳ Работаю…')
-  const progress = new Progress(ctx, status.message_id, state.verbose)
+  const progress = new Progress(ctx, state.verbose)
 
   const abort = new AbortController()
   rt.abort = abort
@@ -227,6 +251,8 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
           progress.add(e.label)
         } else if (e.type === 'note') {
           progress.add(e.text)
+        } else if (e.type === 'partial') {
+          progress.setPartial(e.text)
         }
       },
     })
@@ -242,7 +268,9 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     const summary = state.verbose
       ? `✅ ${secs} с · ${result.toolCalls} инстр. · ${fmtTokens(result.inputTokens)}→${fmtTokens(result.outputTokens)} токенов`
       : null
-    await progress.finish(abort.signal.aborted ? '⏹ Остановлено' : summary)
+    progress.finish()
+    if (abort.signal.aborted) await ctx.reply('⏹ Остановлено')
+    else if (summary) await ctx.reply(summary)
 
     if (result.text) await sendAnswer(ctx, result.text)
     else if (!abort.signal.aborted) await ctx.reply('(модель не вернула текст)')
@@ -250,7 +278,8 @@ async function execute(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
     await sendArtifacts(ctx, ws, cwd, since, result.text)
   } catch (err) {
     const aborted = abort.signal.aborted || (err instanceof Error && err.name === 'AbortError')
-    await progress.finish(aborted ? '⏹ Остановлено' : '❌ Ошибка')
+    progress.finish()
+    if (aborted) await ctx.reply('⏹ Остановлено')
     if (!aborted) {
       console.error('[run] ошибка выполнения:', err)
       const message = err instanceof Error ? err.message : String(err)
@@ -315,6 +344,77 @@ async function enqueue(ctx: Context, scopeId: ScopeId, job: Job): Promise<void> 
 
 /* ------------------------------------------------------------------ команды */
 
+const COMMANDS = [
+  { command: 'panel', description: 'Панель управления темой' },
+  { command: 'new_topic', description: 'Создать новую тему' },
+  { command: 'rename', description: 'Переименовать текущую тему' },
+  { command: 'delete_topic', description: 'Удалить текущую тему' },
+  { command: 'new', description: 'Новая Claude-сессия в этой теме' },
+  { command: 'stop', description: 'Остановить задачу и очистить очередь' },
+  { command: 'model', description: 'Выбрать модель' },
+  { command: 'status', description: 'Состояние темы' },
+  { command: 'files', description: 'Файлы темы' },
+  { command: 'usage', description: 'Лимиты и расход' },
+  { command: 'login', description: 'Обновить авторизацию Claude' },
+  { command: 'auth_status', description: 'Проверить авторизацию Claude' },
+  { command: 'help', description: 'Справка' },
+] as const
+
+function panelMarkup() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🆕 Новая тема', callback_data: 'panel:new_topic' },
+        { text: '⏹ Stop', callback_data: 'panel:stop' },
+      ],
+      [
+        { text: '🤖 Модель', callback_data: 'panel:model' },
+        { text: '👁 Verbose', callback_data: 'panel:verbose' },
+      ],
+      [
+        { text: '📁 Файлы', callback_data: 'panel:files' },
+        { text: '🔐 Auth', callback_data: 'panel:auth' },
+      ],
+      [{ text: '🔄 Обновить', callback_data: 'panel:refresh' }],
+    ],
+  }
+}
+
+function panelText(scopeId: ScopeId): string {
+  const state = getChat(scopeId)
+  const rt = runtimeFor(scopeId)
+  return [
+    '<b>Панель темы</b>',
+    `Модель: <code>${state.model}</code>`,
+    `Папка: <code>${cwdFor(scopeId)}</code>`,
+    `Сессия: ${state.sessionId ? `<code>${state.sessionId.slice(0, 8)}…</code>` : 'новая'}`,
+    `Verbose: ${state.verbose ? 'on' : 'off'}`,
+    `Очередь: ${rt.busy ? `работает + ${rt.queue.length}` : 'свободна'}`,
+  ].join('\n')
+}
+
+async function renderPanel(ctx: Context): Promise<void> {
+  try {
+    await ctx.editMessageText(panelText(scopeFor(ctx)), { parse_mode: 'HTML', reply_markup: panelMarkup() })
+  } catch (err) {
+    if (!/message is not modified/i.test(String(err))) throw err
+  }
+}
+
+async function createTopic(ctx: Context, requestedName: string): Promise<void> {
+  const requested = requestedName.replace(/\s+/g, ' ').trim().slice(0, 128)
+  const name = requested || 'Новая задача'
+  const topic = await ctx.api.createForumTopic(ctx.chat!.id, name)
+  const scopeId = `${ctx.chat!.id}:${topic.message_thread_id}`
+  getChat(scopeId).topicNameImplicit = !requested
+  save()
+  await ctx.api.sendMessage(ctx.chat!.id, panelText(scopeId), {
+    message_thread_id: topic.message_thread_id,
+    parse_mode: 'HTML',
+    reply_markup: panelMarkup(),
+  })
+}
+
 const HELP = [
   '<b>Прокси к Claude Code</b>',
   '',
@@ -322,6 +422,10 @@ const HELP = [
   'подпись к файлу становится промтом.',
   '',
   '<b>Сессия</b>',
+  '/panel — панель управления темой',
+  '/new_topic &lt;название&gt; — создать отдельную тему',
+  '/rename &lt;название&gt; — переименовать текущую тему',
+  '/delete_topic — удалить тему и архивировать файлы',
   '/new — начать новую сессию (забыть контекст)',
   '/sessions — список последних сессий',
   '/resume &lt;n&gt; — вернуться к сессии из списка',
@@ -354,6 +458,144 @@ bot.command('start', async (ctx) => {
 
 bot.command('help', async (ctx) => {
   await ctx.reply(HELP, { parse_mode: 'HTML' })
+})
+
+bot.command('panel', async (ctx) => {
+  await ctx.reply(panelText(scopeFor(ctx)), { parse_mode: 'HTML', reply_markup: panelMarkup() })
+})
+
+bot.command('new_topic', async (ctx) => {
+  try {
+    await createTopic(ctx, ctx.match)
+    await ctx.reply('🆕 Новая тема создана — открой её в списке тем.')
+  } catch (err) {
+    await ctx.reply(`Не удалось создать тему: ${String(err).slice(0, 300)}`)
+  }
+})
+
+bot.command('rename', async (ctx) => {
+  const threadId = ctx.msg?.message_thread_id
+  const name = ctx.match.replace(/\s+/g, ' ').trim().slice(0, 128)
+  if (!threadId) {
+    await ctx.reply('General topic переименовать через бота нельзя.')
+    return
+  }
+  if (!name) {
+    await ctx.reply('Укажи название: /rename Новое название')
+    return
+  }
+  await ctx.api.editForumTopic(ctx.chat.id, threadId, { name })
+  const state = getChat(scopeFor(ctx))
+  state.topicNameImplicit = false
+  save()
+  await ctx.reply(`Тема переименована: ${name}`)
+})
+
+bot.command('delete_topic', async (ctx) => {
+  if (!ctx.msg?.message_thread_id) {
+    await ctx.reply('General topic удалить нельзя.')
+    return
+  }
+  await ctx.reply('Удалить тему и её сообщения? Рабочие файлы будут перенесены в архив.', {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🗑 Удалить тему', callback_data: 'topic_delete:yes' }],
+        [{ text: 'Отмена', callback_data: 'topic_delete:no' }],
+      ],
+    },
+  })
+})
+
+bot.callbackQuery(/^topic_delete:(yes|no)$/, async (ctx) => {
+  if (ctx.match[1] === 'no') {
+    await ctx.answerCallbackQuery('Отменено')
+    await ctx.editMessageText('Удаление отменено.')
+    return
+  }
+  const threadId = ctx.msg?.message_thread_id
+  if (!threadId) {
+    await ctx.answerCallbackQuery({ text: 'General topic удалить нельзя', show_alert: true })
+    return
+  }
+  const scopeId = scopeFor(ctx)
+  const rt = runtimeFor(scopeId)
+  rt.queue.length = 0
+  rt.abort?.abort()
+  archiveWorkspace(scopeId)
+  deleteChat(scopeId)
+  runtimes.delete(scopeId)
+  await ctx.answerCallbackQuery('Удаляю тему')
+  await ctx.api.deleteForumTopic(ctx.chat!.id, threadId)
+})
+
+bot.callbackQuery(/^panel:(.+)$/, async (ctx) => {
+  const action = ctx.match[1]
+  const scopeId = scopeFor(ctx)
+  if (action === 'new_topic') {
+    await ctx.answerCallbackQuery('Создаю новую тему')
+    await createTopic(ctx, '')
+    return
+  }
+  if (action === 'stop') {
+    const rt = runtimeFor(scopeId)
+    rt.queue.length = 0
+    rt.abort?.abort()
+    await ctx.answerCallbackQuery('Останавливаю')
+    await renderPanel(ctx)
+    return
+  }
+  if (action === 'verbose') {
+    const state = getChat(scopeId)
+    state.verbose = !state.verbose
+    save()
+    await ctx.answerCallbackQuery(`Verbose: ${state.verbose ? 'on' : 'off'}`)
+    await renderPanel(ctx)
+    return
+  }
+  if (action === 'model') {
+    await ctx.answerCallbackQuery()
+    await ctx.editMessageText('Выбери модель:', {
+      reply_markup: {
+        inline_keyboard: [
+          ...MODELS.map((m) => [{ text: m.label, callback_data: `panel_model:${m.id}` }]),
+          [{ text: '← Назад', callback_data: 'panel:refresh' }],
+        ],
+      },
+    })
+    return
+  }
+  if (action === 'files') {
+    const ws = workspaceFor(scopeId)
+    const files = listFiles(ws, cwdFor(scopeId))
+    runtimeFor(scopeId).lastListing = files.map((f) => f.path)
+    const text = files.length
+      ? files.slice(0, 15).map((f, i) => `${i + 1}. ${path.basename(f.path)} — ${fmtSize(f.size)}`).join('\n')
+      : 'Файлов пока нет.'
+    await ctx.answerCallbackQuery()
+    await ctx.editMessageText(text, { reply_markup: { inline_keyboard: [[{ text: '← Назад', callback_data: 'panel:refresh' }]] } })
+    return
+  }
+  if (action === 'auth') {
+    await ctx.answerCallbackQuery({
+      text: (await authStatus()) ? 'Claude авторизован' : 'Нужен вход: отправь /login',
+      show_alert: true,
+    })
+    return
+  }
+  await ctx.answerCallbackQuery()
+  await renderPanel(ctx)
+})
+
+bot.callbackQuery(/^panel_model:(.+)$/, async (ctx) => {
+  const id = ctx.match[1]
+  if (!MODELS.some((m) => m.id === id)) {
+    await ctx.answerCallbackQuery('Неизвестная модель')
+    return
+  }
+  getChat(scopeFor(ctx)).model = id
+  save()
+  await ctx.answerCallbackQuery(`Модель: ${id}`)
+  await renderPanel(ctx)
 })
 
 bot.command('auth_status', async (ctx) => {
@@ -750,12 +992,43 @@ async function handleIncoming(ctx: Context, files: IncomingFile[], text: string)
   const prompt = text.trim() || (downloaded.length > 0 ? 'Посмотри приложенные файлы.' : '')
   if (!prompt) return
 
+  const state = getChat(scopeId)
+  const threadId = ctx.msg?.message_thread_id
+  if (state.topicNameImplicit && threadId && !prompt.startsWith('/')) {
+    const name = prompt.replace(/\s+/g, ' ').slice(0, 64)
+    try {
+      await ctx.api.editForumTopic(ctx.chat!.id, threadId, { name })
+      state.topicNameImplicit = false
+      save()
+    } catch {}
+  }
+
   if (downloaded.length > 0) {
     await ctx.reply(`📎 Принял ${downloaded.length} файл(ов) → inbox`)
   }
 
   await enqueue(ctx, scopeId, { prompt, files: downloaded })
 }
+
+bot.on('message:forum_topic_created', async (ctx) => {
+  if (ctx.message.forum_topic_created.is_name_implicit) {
+    getChat(scopeFor(ctx)).topicNameImplicit = true
+    save()
+  }
+})
+
+bot.on('message:forum_topic_edited', async (ctx) => {
+  if (ctx.message.forum_topic_edited.name) {
+    getChat(scopeFor(ctx)).topicNameImplicit = false
+    save()
+  }
+})
+
+bot.on('message:forum_topic_closed', async (ctx) => {
+  const rt = runtimeFor(scopeFor(ctx))
+  rt.queue.length = 0
+  rt.abort?.abort()
+})
 
 bot.on('message', async (ctx) => {
   const m = ctx.message
@@ -823,6 +1096,12 @@ process.once('SIGINT', () => shutdown('SIGINT'))
 process.once('SIGTERM', () => shutdown('SIGTERM'))
 
 console.log(`[bot] разрешённые пользователи: ${[...ALLOWED_USER_IDS].join(', ')}`)
+try {
+  await bot.api.setMyCommands(COMMANDS, { scope: { type: 'all_private_chats' } })
+  await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } })
+} catch (err) {
+  console.error('[bot] не удалось обновить меню команд:', err)
+}
 await bot.start({
   onStart: (info) => console.log(`[bot] запущен как @${info.username}`),
 })
